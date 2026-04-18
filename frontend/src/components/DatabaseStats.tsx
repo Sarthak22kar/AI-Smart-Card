@@ -27,16 +27,10 @@ function DatabaseStats() {
   const fetchStats = async () => {
     setLoading(true);
     try {
-      console.log("Fetching stats from backend...");
       const res = await fetch("http://127.0.0.1:8000/stats/");
-      console.log("Response status:", res.status);
       const data: StatsResponse = await res.json();
-      console.log("Response data:", data);
       if (data.status === "success") {
         setStats(data.statistics);
-        console.log("Stats set successfully:", data.statistics);
-      } else {
-        console.error("Backend returned error status:", data.status);
       }
     } catch (error) {
       console.error("Failed to fetch stats", error);
@@ -72,16 +66,13 @@ function DatabaseStats() {
     );
   }
 
-  console.log("Rendering stats component. Loading:", loading, "Stats:", stats);
-
   return (
     <div style={{
       marginTop: "30px",
       padding: "20px",
       backgroundColor: "#f8f9fa",
       borderRadius: "10px",
-      border: "1px solid #dee2e6",
-      minHeight: "200px" // Add minimum height to prevent collapse
+      border: "1px solid #dee2e6"
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
         <h3 style={{ margin: 0, color: "#495057" }}>📊 Database Statistics</h3>
@@ -120,9 +111,7 @@ function DatabaseStats() {
       </div>
 
       {loading ? (
-        <div style={{ textAlign: "center", padding: "20px" }}>
-          <p>Loading statistics...</p>
-        </div>
+        <p>Loading statistics...</p>
       ) : stats ? (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
           {/* Overview */}
@@ -171,9 +160,7 @@ function DatabaseStats() {
           )}
         </div>
       ) : (
-        <div style={{ textAlign: "center", padding: "20px" }}>
-          <p style={{ color: "#dc3545" }}>Failed to load statistics. Please try refreshing.</p>
-        </div>
+        <p>Failed to load statistics</p>
       )}
     </div>
   );
