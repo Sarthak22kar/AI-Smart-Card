@@ -326,7 +326,8 @@ def get_contact_stats() -> dict:
             "SELECT AVG(extraction_confidence) FROM contacts"
         ).fetchone()[0] or 0.0
 
-        by_designation = dict(c.execute("""
+        # Get profession stats (using designation field)
+        by_profession = dict(c.execute("""
             SELECT designation, COUNT(*) as cnt
             FROM contacts
             WHERE designation != '' AND designation IS NOT NULL
@@ -334,6 +335,27 @@ def get_contact_stats() -> dict:
             ORDER BY cnt DESC
             LIMIT 20
         """).fetchall())
+
+        # Field completion stats
+        phone_count = c.execute(
+            "SELECT COUNT(*) FROM contacts WHERE phone != '' AND phone IS NOT NULL"
+        ).fetchone()[0]
+        
+        email_count = c.execute(
+            "SELECT COUNT(*) FROM contacts WHERE email != '' AND email IS NOT NULL"
+        ).fetchone()[0]
+        
+        profession_count = c.execute(
+            "SELECT COUNT(*) FROM contacts WHERE designation != '' AND designation IS NOT NULL"
+        ).fetchone()[0]
+        
+        company_count = c.execute(
+            "SELECT COUNT(*) FROM contacts WHERE company != '' AND company IS NOT NULL"
+        ).fetchone()[0]
+        
+        location_count = c.execute(
+            "SELECT COUNT(*) FROM contacts WHERE address != '' AND address IS NOT NULL"
+        ).fetchone()[0]
 
         by_company = dict(c.execute("""
             SELECT company, COUNT(*) as cnt
@@ -369,10 +391,17 @@ def get_contact_stats() -> dict:
 
     return {
         "total_contacts":      total,
+        "by_profession":       by_profession,  # Changed from by_designation
         "average_confidence":  round(avg_conf, 3),
+        "field_completion": {   # Added field completion stats
+            "phone": phone_count,
+            "email": email_count,
+            "profession": profession_count,
+            "company": company_count,
+            "location": location_count,
+        },
         "high_confidence":     high_conf,
         "low_confidence":      low_conf,
-        "by_designation":      by_designation,
         "by_company":          by_company,
         "by_ocr_engine":       by_engine,
         "recent_contacts":     [dict(r) for r in recent],
