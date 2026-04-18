@@ -25,6 +25,7 @@ interface ScanResult {
   contact_info?: ExtractedContact;
   images?: ScanImages;
   ocr_engine?: string;
+  single_sided?: boolean;
   processing_time?: { ocr: number; validation: number; database: number; total: number };
   raw_front?: string;
   raw_back?: string;
@@ -139,22 +140,25 @@ function UploadCard({ onScanSuccess }: Props) {
 
   // ── Upload handler ──────────────────────────────────────────────────────────
   const uploadCard = async () => {
-    if (!frontFile || !backFile) {
-      alert("Please select both front and back card images");
+    if (!frontFile && !backFile) {
+      alert("Please select at least one card image (front or back)");
       return;
     }
     setLoading(true);
     setResult(null);
 
     try {
-      const [frontCompressed, backCompressed] = await Promise.all([
-        compressImage(frontFile),
-        compressImage(backFile),
-      ]);
-
       const formData = new FormData();
-      formData.append("front_file", frontCompressed);
-      formData.append("back_file",  backCompressed);
+      
+      if (frontFile) {
+        const frontCompressed = await compressImage(frontFile);
+        formData.append("front_file", frontCompressed);
+      }
+      
+      if (backFile) {
+        const backCompressed = await compressImage(backFile);
+        formData.append("back_file", backCompressed);
+      }
 
       const res  = await fetch("http://127.0.0.1:8000/scan-card/", { method: "POST", body: formData });
       const data: ScanResult = await res.json();
@@ -274,21 +278,25 @@ function UploadCard({ onScanSuccess }: Props) {
             backgroundColor: "#e3f2fd", borderRadius: "8px", fontSize: "12px", color: "#1565c0",
           }}>
             <strong>📸 Supported:</strong> JPG, PNG, HEIC, HEIF, WebP, TIFF, BMP &nbsp;|&nbsp;
-            <strong>⚡ Tip:</strong> Clear, well-lit images give best results
+            <strong>⚡ Tip:</strong> Clear, well-lit images give best results &nbsp;|&nbsp;
+            <strong>🔄 Single-sided:</strong> You can upload just one side if that's all you have
           </div>
 
           <div style={{ textAlign: "center" }}>
             <button
               onClick={uploadCard}
-              disabled={loading || !frontFile || !backFile}
+              disabled={loading || (!frontFile && !backFile)}
               style={{
                 padding: "14px 32px", fontSize: "17px", fontWeight: "bold",
-                backgroundColor: loading || !frontFile || !backFile ? "#ccc" : "#28a745",
+                backgroundColor: loading || (!frontFile && !backFile) ? "#ccc" : "#28a745",
                 color: "white", border: "none", borderRadius: "10px",
-                cursor: loading || !frontFile || !backFile ? "not-allowed" : "pointer",
+                cursor: loading || (!frontFile && !backFile) ? "not-allowed" : "pointer",
               }}
             >
-              {loading ? "🔄 Scanning..." : "🚀 Scan Card"}
+              {loading ? "🔄 Scanning..." : 
+               frontFile && backFile ? "🚀 Scan Card (Both Sides)" :
+               frontFile ? "🚀 Scan Card (Front Only)" :
+               backFile ? "🚀 Scan Card (Back Only)" : "🚀 Scan Card"}
             </button>
 
             {loading && (
@@ -390,9 +398,17 @@ function UploadCard({ onScanSuccess }: Props) {
                     }}>
                       — toggle Before / After to see preprocessing effect
                     </span>
+                    {result.single_sided && (
+                      <span style={{
+                        fontSize: "10px", backgroundColor: "#ffc107", color: "#856404",
+                        padding: "2px 6px", borderRadius: "8px", fontWeight: 600,
+                      }}>
+                        SINGLE-SIDED
+                      </span>
+                    )}
                   </h3>
 
-                  <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", justifyContent: result.single_sided ? "center" : "flex-start" }}>
                     {result.images.before_front && (
                       <ImageComparison images={result.images} side="front" />
                     )}

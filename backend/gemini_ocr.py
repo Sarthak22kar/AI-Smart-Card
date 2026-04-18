@@ -129,6 +129,40 @@ RULES:
 - Taglines and slogans are NOT addresses
 - Phone: prefer M:/Mobile: labeled numbers; T:/Tel: are landlines"""
 
+_SINGLE_CARD_PROMPT = """You are an expert visiting card OCR system. I am sending you ONE image of a visiting card — the {side} side only.
+
+IMPORTANT: Cards may be rotated (sideways or upside down). Read text in any orientation.
+
+Extract all available contact details from this single image. Some information may be missing since you only have one side.
+
+FINDING THE PERSON'S NAME:
+- The name is 2-3 proper words, each starting with a capital letter
+- It appears above the job title on the card
+- It is NEVER a company name, logo text, or random letters
+- Examples: "Krushnakant Masal", "Rohish Kalvit", "Rajesh Kumar Singh"
+- If the name area has a logo next to it, IGNORE the logo — read only plain text
+
+Return ONLY this JSON (no markdown, no explanation):
+{{
+  "name": "person full name",
+  "phone": "+91 XXXXX XXXXX (mobile only, multiple separated by ' / ')",
+  "email": "email@domain.ext (any TLD accepted)",
+  "designation": "job title",
+  "company": "company name",
+  "address": "full street address with city and PIN",
+  "website": "http://website.url",
+  "gstin": "15-char GST number or empty"
+}}
+
+RULES:
+- Extract only what is visible on this {side} side
+- If name is unclear or looks like logo/noise, return "" for name
+- Do NOT invent data not visible on the card
+- Email/website TLD can be anything: .energy .io .in .co.in .org .net
+- Taglines and slogans are NOT addresses
+- Phone: prefer M:/Mobile: labeled numbers; T:/Tel: are landlines
+- Leave fields empty if not found on this side"""
+
 _ENRICH_PROMPT_TEMPLATE = """You are an expert at parsing visiting card text.
 
 Below is the raw text extracted from a visiting card by OCR.
@@ -418,7 +452,8 @@ def _looks_like_garbage_name(name: str) -> bool:
 
 def gemini_extract_both_cards(front_bytes: bytes, back_bytes: bytes) -> dict | None:
     """
-    PRIMARY path: send BOTH card images in ONE Gemini call.
+    PRIMARY path: send available card images in ONE Gemini call.
+    Handles both double-sided and single-sided cards.
     Returns dict with all 8 fields, or None on failure.
 
     Uses 1 API call instead of 2 — avoids rate limiting.
@@ -426,11 +461,31 @@ def gemini_extract_both_cards(front_bytes: bytes, back_bytes: bytes) -> dict | N
     if not GEMINI_API_KEY:
         return None
 
+    # Check which sides we have
+    has_front = bool(front_bytes)
+    has_back = bool(back_bytes)
+    
+    if not has_front and not has_back:
+        return None
+
     def _do():
-        front_b64 = _prepare_image(front_bytes)
-        back_b64  = _prepare_image(back_bytes)
-        raw  = _call_gemini_with_two_images(_BOTH_CARDS_PROMPT, front_b64, back_b64,
-                                             temperature=0.05)
+        if has_front and has_back:
+            # Both sides available - use existing logic
+            front_b64 = _prepare_image(front_bytes)
+            back_b64  = _prepare_image(back_bytes)
+            raw = _call_gemini_with_two_images(_BOTH_CARDS_PROMPT, front_b64, back_b64,
+                                               temperature=0.05)
+        elif has_front:
+            # Only front side available
+            front_b64 = _prepare_image(front_bytes)
+            raw = _call_gemini_with_image(_SINGLE_CARD_PROMPT.format(side="front"), front_b64,
+                                          temperature=0.05)
+        else:
+            # Only back side available
+            back_b64 = _prepare_image(back_bytes)
+            raw = _call_gemini_with_image(_SINGLE_CARD_PROMPT.format(side="back"), back_b64,
+                                          temperature=0.05)
+        
         data = _parse_json_response(raw)
         result = {k: str(data.get(k, '') or '').strip() for k in _FIELDS}
         if not any(result.values()):
@@ -447,7 +502,8 @@ def gemini_extract_both_cards(front_bytes: bytes, back_bytes: bytes) -> dict | N
             result['name'] = ''
 
         found = sum(1 for v in result.values() if v)
-        print(f"  ✅ Gemini both-cards: {found}/8 fields  name='{result.get('name', '')}'")
+        sides_info = "both-sides" if has_front and has_back else ("front-only" if has_front else "back-only")
+        print(f"  ✅ Gemini {sides_info}: {found}/8 fields  name='{result.get('name', '')}'")
 
     return result
 
