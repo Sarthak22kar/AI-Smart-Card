@@ -183,7 +183,8 @@ _EMAIL_RE = re.compile(
 # OCR substitutions to fix before validating
 _EMAIL_FIXES = [
     (r'\.\.+',   '.'),    # double dots → single dot
-    (r'\s+',     ''),     # spaces inside email
+    (r'(\w)\s+(\w)',  r'\1.\2'),  # space between word chars in domain → dot (iiae edu.in → iiae.edu.in)
+    (r'\s+',     ''),     # remaining spaces
     (r'[,;]',    '.'),    # comma/semicolon → dot (OCR confusion)
     (r'@{2,}',   '@'),    # double @
     (r'\[at\]',  '@'),    # [at] → @

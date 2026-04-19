@@ -70,23 +70,14 @@ function ContactList({ refreshTrigger }: Props) {
         <h2 style={{ margin: 0, fontSize: "1.3rem", color: "#1a1a2e" }}>
           📇 My Contacts <span style={{ fontSize: "0.9rem", color: "#888", fontWeight: 400 }}>({validContacts.length})</span>
         </h2>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <button onClick={fetchContacts} style={{
-            padding: "6px 12px", backgroundColor: "#28a745", color: "white",
-            border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px"
+        {validContacts.length > 6 && (
+          <button onClick={() => setShowAll(!showAll)} style={{
+            padding: "6px 14px", backgroundColor: "#007bff", color: "white",
+            border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px"
           }}>
-            🔄 Refresh
+            {showAll ? "Show Less" : `View All (${validContacts.length})`}
           </button>
-          {validContacts.length > 6 && (
-            <button onClick={() => setShowAll(!showAll)} style={{
-              padding: "6px 14px", backgroundColor: "#007bff", color: "white",
-              border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px",
-              fontWeight: "600"
-            }}>
-              {showAll ? "📋 Show Less" : `📋 View All (${validContacts.length})`}
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {loading ? (
@@ -199,25 +190,9 @@ function ContactList({ refreshTrigger }: Props) {
           ))}
 
           {!showAll && validContacts.length > 6 && (
-            <div style={{ 
-              textAlign: "center", 
-              padding: "16px", 
-              backgroundColor: "#f8f9fa", 
-              borderRadius: "8px", 
-              border: "1px dashed #dee2e6",
-              marginTop: "10px"
-            }}>
-              <p style={{ margin: "0 0 8px", color: "#6c757d", fontSize: "14px" }}>
-                Showing 6 of {validContacts.length} contacts
-              </p>
-              <button onClick={() => setShowAll(true)} style={{
-                padding: "8px 16px", backgroundColor: "#007bff", color: "white",
-                border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "14px",
-                fontWeight: "600"
-              }}>
-                📋 View All {validContacts.length} Contacts
-              </button>
-            </div>
+            <p style={{ textAlign: "center", color: "#aaa", fontSize: "13px" }}>
+              +{validContacts.length - 6} more — click "View All"
+            </p>
           )}
         </div>
       )}

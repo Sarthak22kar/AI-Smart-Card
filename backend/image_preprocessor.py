@@ -156,10 +156,10 @@ def _adaptive_threshold(img: np.ndarray) -> np.ndarray:
 def fast_preprocess(image_bytes: bytes) -> bytes:
     """
     Lightweight preprocessing for Gemini (~0.1s).
-    Gemini handles backgrounds/shadows natively — we just need
-    good resolution, correct orientation, and contrast.
+    Handles: normal cards, dark cards, colored cards, low-contrast cards.
 
-    Steps: EXIF fix → auto-rotate → resize to 1400px → CLAHE → sharpen
+    Key insight: Gemini is smart — we just need to give it a readable image.
+    Don't over-process. Fix brightness, rotate, resize. That's it.
     """
     try:
         img = _load(image_bytes)
@@ -171,19 +171,46 @@ def fast_preprocess(image_bytes: bytes) -> bytes:
     except Exception:
         pass
 
-    # Auto-rotate: if image is taller than wide (portrait), rotate 90°
-    # Visiting cards are landscape — portrait means the photo was taken sideways
+    # Auto-rotate portrait images (visiting cards are landscape)
     try:
         h, w = img.shape[:2]
-        if h > w * 1.2:  # clearly portrait orientation
+        if h > w * 1.2:
             img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
     except Exception:
         pass
 
+    # Analyze image brightness
     try:
-        img = _clahe(img)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        mean_brightness = float(gray.mean())
+        std_brightness  = float(gray.std())
+
+        if mean_brightness < 60:
+            # Very dark image — aggressive brightness boost
+            # Use gamma correction (better than linear for dark images)
+            gamma = 0.4  # < 1 brightens the image
+            lut = np.array([
+                min(255, int(((i / 255.0) ** gamma) * 255))
+                for i in range(256)
+            ], dtype=np.uint8)
+            img = cv2.LUT(img, lut)
+            print(f"  🔆 Very dark image corrected (brightness={mean_brightness:.0f})")
+
+        elif mean_brightness < 100 and std_brightness < 50:
+            # Dark AND low contrast — boost + CLAHE
+            img = cv2.convertScaleAbs(img, alpha=1.8, beta=20)
+            img = _clahe(img)
+            print(f"  🔆 Dark low-contrast image corrected (brightness={mean_brightness:.0f})")
+
+        else:
+            # Normal image — just CLAHE for contrast enhancement
+            img = _clahe(img)
+
     except Exception:
-        pass
+        try:
+            img = _clahe(img)
+        except Exception:
+            pass
 
     try:
         img = _sharpen(img)

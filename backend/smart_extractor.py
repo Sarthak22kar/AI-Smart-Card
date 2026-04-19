@@ -548,7 +548,36 @@ def extract_contact_info(text: str) -> dict:
     if not text or not text.strip():
         return contact
 
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+    # ── Merge consecutive single-word capitalized lines ──────────────────────
+    # EasyOCR often splits "Prakash Bharati" into two lines: "Prakash" / "Bharati"
+    # Merge them back into one line if they look like name parts
+    merged_lines = []
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        words = line.split()
+        # Single capitalized word (likely first name split from last name)
+        if (len(words) == 1
+                and len(line) >= 3
+                and line[0].isupper()
+                and line.isalpha()
+                and i + 1 < len(raw_lines)):
+            next_line = raw_lines[i + 1]
+            next_words = next_line.split()
+            # Next line is also a single capitalized word → merge
+            if (len(next_words) == 1
+                    and len(next_line) >= 3
+                    and next_line[0].isupper()
+                    and next_line.isalpha()):
+                merged_lines.append(f"{line} {next_line}")
+                i += 2
+                continue
+        merged_lines.append(line)
+        i += 1
+
+    lines = merged_lines
     full  = '\n'.join(lines)
 
     # 1. Labeled fields (Mobile:, E-mail:, etc.)
@@ -587,9 +616,11 @@ def extract_contact_info(text: str) -> dict:
             webs = [
                 w for w in webs
                 if '@' not in w
-                and len(w) > 5
+                and len(w) > 8
                 and re.search(r'\.[a-zA-Z]{2,}', w)
                 and not re.match(r'^[\d\s\-\+]+$', w)
+                # Must have meaningful domain (not just a TLD fragment like 'edu.in')
+                and len(re.sub(r'^https?://', '', re.sub(r'^www\.', '', w)).split('.')[0]) >= 3
             ]
             if webs:
                 contact['website'] = webs[0]

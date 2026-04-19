@@ -1,21 +1,16 @@
 """
-Google Gemini OCR  –  Visiting Card Extraction
-================================================
-Three modes:
-
-  1. gemini_extract_structured(image_bytes) → dict
-     PRIMARY: sends the image + a structured JSON prompt.
-     Returns a fully-parsed contact dict directly from Gemini.
-
-  2. gemini_enrich_from_text(raw_text, current_contact) → dict
-     LAST-RESORT ENRICHMENT: when any field is still empty after all
-     other extraction steps, send the raw OCR text to Gemini and ask
-     it to fill in only the missing fields.  No image needed — just text.
-
-  3. gemini_ocr(image_bytes) → str
-     LEGACY: raw text extraction used by ocr.py as a fallback.
-
-Model: gemini-2.5-flash  (free tier: 250 req/day, 10 req/min)
+Google Gemini OCR  –  Visiting Card Extraction  v7
+====================================================
+Single-call extraction: sends BOTH card images in ONE Gemini request.
+Handles every card type:
+  - Standard cards (name top, company bottom)
+  - Rotated / sideways cards
+  - Single-sided cards (back is blank or same image)
+  - Company-only front, person on back
+  - Non-standard TLDs (.energy, .io, .in, .co.in)
+  - T:/M: labeled phones
+  - Cards with logos/QR codes next to text
+  - Cards with only partial information
 """
 
 import os
@@ -49,166 +44,113 @@ if GEMINI_API_KEY:
 else:
     print("⚠️  No Gemini API key — using EasyOCR/Tesseract fallback")
 
-# All contact field keys (order matters for prompts)
 _FIELDS = ('name', 'phone', 'email', 'designation', 'company',
            'address', 'website', 'gstin')
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────────
+# ── Master extraction prompt ──────────────────────────────────────────────────
 
-_STRUCTURED_PROMPT = """You are an expert visiting card OCR system. Carefully read the TEXT on this visiting card.
+_MASTER_PROMPT = """You are an expert visiting card OCR and data extraction system.
 
-IMPORTANT: The card may be rotated (sideways or upside down). Read the text regardless of orientation.
+I am sending you images of a visiting card (front and/or back side).
 
-STEP 1 — Find the person's name:
-- The name is usually the LARGEST or most prominent text on the card
-- It appears ABOVE the job title/designation
-- It is 2-3 words, each starting with a capital letter (e.g. "Krushnakant Masal", "Rohish Kalvit")
-- It is NEVER a company name, logo text, slogan, or random letters
-- If the name area has a colorful logo or graphic next to it, IGNORE the graphic — read only the plain text
-- Common Indian names: Rohish, Kalvit, Rajesh, Anant, Santosh, Priya, Neha, Kiran, Ravi, Amit, Krushnakant, Masal, etc.
+YOUR TASK: Extract ALL contact information and return it as a JSON object.
 
-STEP 2 — Find all other fields:
-- phone: Look for M: or Mobile: label (mobile numbers). Format: +91 XXXXX XXXXX
-- email: Look for E: or Email: label. Accept ANY domain (.com, .in, .energy, .io, etc.)
-- designation: Job title (VP, Director, Manager, Engineer, Field Sales Representative, etc.)
-- company: Company name (often has Pvt. Ltd., Limited, etc.)
-- address: Street address with city and PIN code
-- website: Look for W: or Website: label. Accept any domain.
-- gstin: 15-character GST number
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CARD READING RULES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return ONLY this JSON (no markdown, no explanation):
-{
-  "name": "person full name here",
-  "phone": "+91 XXXXX XXXXX",
-  "email": "email@domain.ext",
-  "designation": "job title",
-  "company": "company name",
-  "address": "full address",
-  "website": "http://website.url",
-  "gstin": "15char gstin or empty"
-}
+1. ORIENTATION: Cards may be rotated 90°, 180°, or sideways. Read text in ANY direction.
 
-RULES:
-- If name is unclear or looks like random letters/logo text, return "" for name
-- Do NOT invent data not on the card
-- Email TLD can be anything: .energy .io .in .co.in .org .net .tech
-- Taglines are NOT addresses
-- The card may be rotated — read text in any orientation"""
+2. BOTH SIDES: Combine information from front AND back. The person's name/designation 
+   is often on the back, while address/website may be on the front.
 
-_BOTH_CARDS_PROMPT = """You are an expert visiting card OCR system. I am sending you TWO images of the same visiting card — the FRONT side and the BACK side.
+3. SINGLE SIDE: If both images look the same or one is blank, treat as single-sided card.
 
-IMPORTANT: Cards may be rotated (sideways or upside down). Read text in any orientation.
+4. DARK/COLORED CARDS: Some cards have dark backgrounds (green, blue, black, purple).
+   Look carefully for light-colored text on dark backgrounds.
+   The text IS there — read it carefully even if contrast appears low.
 
-Combine information from BOTH images to extract the complete contact details.
+5. LOGO-ONLY SIDE: If one side shows only a company logo with no readable contact text,
+   extract what you can from the other side only.
 
-FINDING THE PERSON'S NAME:
-- The name is 2-3 proper words, each starting with a capital letter
-- It appears above the job title on the card
-- It is NEVER a company name, logo text, or random letters
-- Examples: "Krushnakant Masal", "Rohish Kalvit", "Rajesh Kumar Singh"
-- If the name area has a logo next to it, IGNORE the logo — read only plain text
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD EXTRACTION RULES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return ONLY this JSON (no markdown, no explanation):
-{
-  "name": "person full name",
-  "phone": "+91 XXXXX XXXXX (mobile only, multiple separated by ' / ')",
-  "email": "email@domain.ext (any TLD accepted)",
-  "designation": "job title",
-  "company": "company name",
-  "address": "full street address with city and PIN",
-  "website": "http://website.url",
-  "gstin": "15-char GST number or empty"
-}
+NAME:
+- The person's full name (2-4 words, each starting with capital letter)
+- Usually the LARGEST text or appears at the TOP of the card
+- Examples: "Rohish Kalvit", "Dr. Aditya Abhyankar", "Pooja Shimpi", "Krushnakant Masal"
+- Include honorific if present: Dr., Mr., Mrs., Ms., Prof., Er., CA
+- STRICTLY IGNORE: company logos, background textures, decorative patterns, watermarks
+- STRICTLY IGNORE: text that looks like random letters or noise (e.g. "Se Bs 2 aoe", "SG ie oe See")
+- If the card has a DARK or COLORED background, look for light-colored text on that background
+- If name is unclear or looks like noise/logo text, return ""
 
-RULES:
-- Combine data from BOTH card images
-- If name is unclear or looks like logo/noise, return "" for name
-- Do NOT invent data not visible on the cards
-- Email/website TLD can be anything: .energy .io .in .co.in .org .net
-- Taglines and slogans are NOT addresses
-- Phone: prefer M:/Mobile: labeled numbers; T:/Tel: are landlines"""
+PHONE:
+- Mobile numbers only (10 digits starting with 6, 7, 8, or 9)
+- Look for labels: M:, Mobile:, Mob:, Cell: → these are mobile numbers
+- Labels T:, Tel:, Telephone:, Fax: → these are landlines (include only if no mobile)
+- Format: +91 XXXXX XXXXX
+- Multiple phones: separate with " / "
+- Examples: "+91 98765 43210", "+91 91684 03315 / +91 80070 27575"
 
-_SINGLE_CARD_PROMPT = """You are an expert visiting card OCR system. I am sending you ONE image of a visiting card — the {side} side only.
+EMAIL:
+- Look for labels: E:, Email:, E-mail:, Mail:
+- Accept ANY domain extension: .com, .in, .energy, .io, .org, .net, .co.in, .edu, .ac.in, etc.
+- Convert to lowercase
+- Fix OCR errors: spaces in domain → dots (e.g. "iiae edu.in" → "iiae.edu.in")
 
-IMPORTANT: Cards may be rotated (sideways or upside down). Read text in any orientation.
+DESIGNATION:
+- Job title exactly as written on card
+- Examples: "Director", "VP Business Development", "Field Sales Representative", "Dean"
+- Do NOT include OCR noise symbols like @, #, |
 
-Extract all available contact details from this single image. Some information may be missing since you only have one side.
+COMPANY:
+- Full company/organization name
+- Preserve exact capitalization and special characters (&, -)
+- Examples: "h2e Power Systems Private Limited", "R & D ECOSISTEMS", "SAVITRIBAI PHULE PUNE UNIVERSITY"
 
-FINDING THE PERSON'S NAME:
-- The name is 2-3 proper words, each starting with a capital letter
-- It appears above the job title on the card
-- It is NEVER a company name, logo text, or random letters
-- Examples: "Krushnakant Masal", "Rohish Kalvit", "Rajesh Kumar Singh"
-- If the name area has a logo next to it, IGNORE the logo — read only plain text
+ADDRESS:
+- Complete postal address with street, area, city, PIN code
+- Combine multiple address lines into one string
+- Example: "Office 405, 4th floor, A-wing, Kapil Zenith I.T. Park, Bavdhan, Pune 411021"
+- Do NOT include taglines or slogans as address
 
-Return ONLY this JSON (no markdown, no explanation):
-{{
-  "name": "person full name",
-  "phone": "+91 XXXXX XXXXX (mobile only, multiple separated by ' / ')",
-  "email": "email@domain.ext (any TLD accepted)",
-  "designation": "job title",
-  "company": "company name",
-  "address": "full street address with city and PIN",
-  "website": "http://website.url",
-  "gstin": "15-char GST number or empty"
-}}
+WEBSITE:
+- Look for labels: W:, Website:, Web:
+- Accept ANY domain: www.company.com, company.in, startup.io, h2e.energy
+- Include http:// prefix
+- Do NOT confuse with email addresses
 
-RULES:
-- Extract only what is visible on this {side} side
-- If name is unclear or looks like logo/noise, return "" for name
-- Do NOT invent data not visible on the card
-- Email/website TLD can be anything: .energy .io .in .co.in .org .net
-- Taglines and slogans are NOT addresses
-- Phone: prefer M:/Mobile: labeled numbers; T:/Tel: are landlines
-- Leave fields empty if not found on this side"""
+GSTIN:
+- 15-character Indian GST number
+- Pattern: 2 digits + 5 letters + 4 digits + 1 letter + 1 alphanumeric + Z + 1 alphanumeric
+- Example: "27BVFPK3861G1ZH"
 
-_ENRICH_PROMPT_TEMPLATE = """You are an expert at parsing visiting card text.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Below is the raw text extracted from a visiting card by OCR.
-Some fields have already been extracted (shown as ALREADY FOUND).
-Your job is to find ONLY the fields marked as MISSING.
+Return ONLY this JSON object. No markdown, no explanation, no code blocks:
 
-RAW CARD TEXT:
----
-{raw_text}
----
+{"name":"","phone":"","email":"","designation":"","company":"","address":"","website":"","gstin":""}
 
-ALREADY FOUND (do NOT change these):
-{already_found}
-
-MISSING FIELDS TO FIND:
-{missing_fields}
-
-RULES:
-1. Return ONLY a valid JSON object with ONLY the missing field keys
-2. No explanation, no markdown, no code blocks
-3. If a missing field is genuinely not in the text, use empty string ""
-4. For phone: extract mobile numbers (10 digits, starting with 6-9)
-   - Format as +91 XXXXX XXXXX
-   - Look for M: or Mobile: labels for mobile numbers
-   - T: or Tel: labels are landlines — include only if no mobile found
-5. For email: accept ANY domain (.com, .in, .energy, .io, .org, .net, .tech, etc.)
-   - Look for E: or Email: labels
-6. For website: accept ANY domain — look for W: or Website: labels
-   - Include www. prefix if shown on card
-7. For name: person's full name only (not company, not slogan)
-   - Include honorific (Dr./Mr./Mrs.) if present
-8. For address: full postal address with street, city, PIN
-9. For company: exact company name with proper capitalization
-10. For designation: job title exactly as written
-11. For gstin: 15-character GST number
-
-Return JSON with only these keys: {missing_keys_list}"""
+Use empty string "" for any field not found on the card.
+Do NOT invent or guess information not visible on the card."""
 
 
 # ── Image preparation ─────────────────────────────────────────────────────────
 
 def _prepare_image(image_bytes: bytes, max_side: int = 1600) -> str:
-    """Resize if needed and return base64-encoded JPEG string."""
+    """Resize if needed, fix orientation, return base64 JPEG string."""
     pil = Image.open(io.BytesIO(image_bytes))
     if pil.mode != 'RGB':
         pil = pil.convert('RGB')
+    # Auto-rotate portrait images (cards are landscape)
+    if pil.height > pil.width * 1.2:
+        pil = pil.rotate(90, expand=True)
     if max(pil.size) > max_side:
         ratio = max_side / max(pil.size)
         pil = pil.resize(
@@ -220,10 +162,9 @@ def _prepare_image(image_bytes: bytes, max_side: int = 1600) -> str:
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
-# ── Core API calls ────────────────────────────────────────────────────────────
+# ── API call ──────────────────────────────────────────────────────────────────
 
 def _post(url: str, payload: dict) -> str:
-    """Make a POST request and return the text response."""
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode('utf-8'),
@@ -232,7 +173,6 @@ def _post(url: str, payload: dict) -> str:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         result = json.loads(resp.read().decode('utf-8'))
-
     candidates = result.get('candidates', [])
     if not candidates:
         raise ValueError("Gemini returned no candidates")
@@ -242,54 +182,17 @@ def _post(url: str, payload: dict) -> str:
     return parts[0]['text'].strip()
 
 
-def _call_gemini_with_two_images(prompt: str, front_b64: str, back_b64: str,
-                                  temperature: float = 0.05) -> str:
-    """Single Gemini call with BOTH card images — saves API quota."""
+def _call_gemini(parts_list: list, temperature: float = 0.05) -> str:
+    """Generic Gemini call with any parts list."""
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
     payload = {
-        "contents": [{"parts": [
-            {"text": "FRONT of card:"},
-            {"inline_data": {"mime_type": "image/jpeg", "data": front_b64}},
-            {"text": "BACK of card:"},
-            {"inline_data": {"mime_type": "image/jpeg", "data": back_b64}},
-            {"text": prompt},
-        ]}],
+        "contents": [{"parts": parts_list}],
         "generationConfig": {
-            "temperature": temperature, "topK": 1, "topP": 0.8,
+            "temperature": temperature,
+            "topK": 1,
+            "topP": 0.8,
             "maxOutputTokens": 1024,
-        }
-    }
-    return _post(url, payload)
-
-
-def _call_gemini_with_image(prompt: str, img_b64: str,
-                             temperature: float = 0.05) -> str:
-    """Gemini API call with image."""
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    payload = {
-        "contents": [{"parts": [
-            {"text": prompt},
-            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-        ]}],
-        "generationConfig": {
-            "temperature": temperature, "topK": 1, "topP": 0.8,
-            "maxOutputTokens": 1024,
-        }
-    }
-    return _post(url, payload)
-
-
-def _call_gemini_text_only(prompt: str, temperature: float = 0.05) -> str:
-    """Gemini API call with text only (no image)."""
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": temperature, "topK": 1, "topP": 0.8,
-            "maxOutputTokens": 512,
         }
     }
     return _post(url, payload)
@@ -297,308 +200,313 @@ def _call_gemini_text_only(prompt: str, temperature: float = 0.05) -> str:
 
 # ── JSON parsing ──────────────────────────────────────────────────────────────
 
-def _parse_json_response(raw: str) -> dict:
+def _parse_json(raw: str) -> dict:
     """
-    Parse Gemini's response as JSON.
-    Handles markdown code fences, trailing commas, and other common issues.
+    Parse Gemini JSON response robustly.
+    Handles: markdown fences, trailing commas, unterminated strings,
+    truncated JSON, extra text before/after JSON.
     """
     raw = raw.strip()
 
-    # Strip markdown code fences
-    if raw.startswith('```'):
+    # Strip markdown fences
+    if '```' in raw:
         lines = raw.split('\n')
-        inner = []
-        in_block = False
-        for line in lines:
-            if line.startswith('```'):
-                in_block = not in_block
-                continue
-            inner.append(line)
+        inner = [l for l in lines if not l.startswith('```')]
         raw = '\n'.join(inner).strip()
 
-    # Find the JSON object boundaries
+    # Find JSON object start
     start = raw.find('{')
-    end   = raw.rfind('}')
-    if start != -1 and end != -1:
-        raw = raw[start:end + 1]
+    if start == -1:
+        raise ValueError(f"No JSON object found in: {raw[:100]}")
 
-    # Fix trailing commas before } or ] (common Gemini quirk)
+    raw = raw[start:]
+
+    # Find JSON object end — if missing (truncated), add it
+    end = raw.rfind('}')
+    if end == -1:
+        # Truncated JSON — close it
+        raw = raw + '"}'
+        # Try to find the last complete field
+        end = raw.rfind('}')
+
+    raw = raw[:end + 1]
+
+    # Fix trailing commas before } or ]
     raw = re.sub(r',\s*([}\]])', r'\1', raw)
 
-    return json.loads(raw)
+    # Try direct parse first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Field-by-field extraction for malformed JSON
+    result = {}
+    for field in _FIELDS:
+        # Match complete field: "field": "value"
+        m = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"]*)"', raw)
+        if m:
+            result[field] = m.group(1).strip()
+        else:
+            # Match unterminated field: "field": "value (no closing quote)
+            m2 = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"{{}}]*?)(?:"|,|\}}|$)', raw)
+            result[field] = m2.group(1).strip() if m2 else ''
+
+    if any(result.values()):
+        print(f"  ⚠️ Used field-by-field extraction (malformed JSON)")
+        return result
+
+    raise ValueError(f"Could not parse JSON: {raw[:200]}")
 
 
 # ── Error handling ────────────────────────────────────────────────────────────
 
-def _handle_http_error(e: urllib.error.HTTPError) -> None:
+def _handle_error(e: urllib.error.HTTPError) -> str:
+    """Log error and return error type string."""
     try:
         body = e.read().decode('utf-8')
         data = json.loads(body) if body else {}
-        msg  = data.get('error', {}).get('message', body[:120])
+        msg  = data.get('error', {}).get('message', body[:200])
     except Exception:
         msg = str(e)
 
-    if e.code == 400:
+    if e.code == 403:
+        if 'not been used' in msg or 'disabled' in msg:
+            print(f"  ❌ Gemini API not enabled for this project.")
+            print(f"     Enable at: https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview")
+            return 'not_enabled'
+        elif 'leaked' in msg.lower():
+            print("  ❌ Gemini: API key reported as leaked — get a new key")
+            return 'leaked'
+        else:
+            print(f"  ❌ Gemini 403: {msg[:100]}")
+            return 'forbidden'
+    elif e.code == 429:
+        print("  ⚠️ Gemini: quota/rate limit exceeded")
+        return 'quota'
+    elif e.code == 400:
         if 'API_KEY_INVALID' in msg or 'API key not valid' in msg:
             print("  ❌ Gemini: invalid API key")
-        elif 'quota' in msg.lower():
-            print("  ⚠️ Gemini: daily quota exceeded (250 req/day free tier)")
-        else:
-            print(f"  ❌ Gemini 400: {msg[:100]}")
-    elif e.code == 429:
-        print("  ⚠️ Gemini: rate limit (10 req/min) — retrying")
-    elif e.code == 403:
-        print("  ❌ Gemini: access forbidden — check API key permissions")
-    elif e.code == 503:
-        print("  ⚠️ Gemini: service temporarily unavailable")
+            return 'invalid_key'
+        print(f"  ❌ Gemini 400: {msg[:100]}")
+        return 'bad_request'
     else:
         print(f"  ❌ Gemini HTTP {e.code}: {msg[:100]}")
+        return 'error'
 
 
 def _with_retry(fn, *args, **kwargs):
-    """Call fn(); on 429 wait 6s and retry once, then use fallback."""
+    """Call fn(); on 429 wait 6s and retry once."""
     try:
         return fn(*args, **kwargs)
     except urllib.error.HTTPError as e:
-        _handle_http_error(e)
-        if e.code == 429:
-            print("  ⏳ Rate limited — waiting 6s then retrying once...")
+        err_type = _handle_error(e)
+        if err_type == 'quota':
+            print("  ⏳ Waiting 6s then retrying once...")
             time.sleep(6)
             try:
                 return fn(*args, **kwargs)
             except urllib.error.HTTPError as e2:
-                if e2.code == 429:
-                    print("  ⚡ Still rate limited — using Tesseract fallback")
-                else:
-                    _handle_http_error(e2)
+                _handle_error(e2)
             except Exception as e2:
-                print(f"  ❌ Gemini retry failed: {e2}")
+                print(f"  ❌ Retry failed: {e2}")
         return None
     except Exception as e:
         print(f"  ❌ Gemini error: {str(e)[:100]}")
         return None
 
 
-# ── Name quality check ───────────────────────────────────────────────────────
+# ── Name quality check ────────────────────────────────────────────────────────
 
 def _looks_like_garbage_name(name: str) -> bool:
-    """
-    Return True if the name looks like OCR noise rather than a real person name.
-    Examples of garbage: "SG ie oe See", "h2e", "@ @", "Vp Business Development @ @ I"
-    """
+    """Return True if name looks like OCR noise, not a real person name."""
     if not name or not name.strip():
         return True
-
     name = name.strip()
     words = name.split()
-
-    # Too few or too many words
     if len(words) < 2 or len(words) > 5:
         return True
-
-    # Contains symbols that don't belong in names
     if re.search(r'[@#$%^&*()+=\[\]{}<>|\\~`]', name):
         return True
-
-    # Contains digits
     if re.search(r'\d', name):
         return True
-
     honorifics = {'dr', 'mr', 'mrs', 'ms', 'prof', 'er', 'ca', 'adv',
                   'dr.', 'mr.', 'mrs.', 'ms.', 'prof.', 'er.', 'ca.', 'adv.'}
-
-    # Check each word
     for word in words:
         clean = word.rstrip('.')
         if not clean:
             continue
-
-        # Honorifics are always OK
         if word.lower() in honorifics:
             continue
-
-        # Word must start with uppercase
         if not word[0].isupper():
             return True
-
-        # Word must be at least 2 chars
         if len(clean) < 2:
             return True
-
-        # All-uppercase short words (≤2 chars) are likely initials/noise, not name words
         if clean.isupper() and len(clean) <= 2:
             return True
-
-        # Word must be mostly alphabetic
         alpha = sum(c.isalpha() for c in clean)
         if alpha < len(clean) * 0.8:
             return True
-
-    # At least 2 words must start with uppercase (excluding honorifics)
-    non_honorific_words = [w for w in words if w.lower() not in honorifics]
-    cap_words = sum(1 for w in non_honorific_words if w and w[0].isupper())
-    if cap_words < 2:
+    non_hon = [w for w in words if w.lower() not in honorifics]
+    if sum(1 for w in non_hon if w and w[0].isupper()) < 2:
         return True
-
-    # All non-honorific words must start with uppercase (real names are title case)
-    for w in non_honorific_words:
+    for w in non_hon:
         if w and not w[0].isupper():
             return True
-
     return False
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def gemini_extract_both_cards(front_bytes: bytes, back_bytes: bytes) -> dict | None:
+def gemini_extract_both_cards(front_bytes: bytes, back_bytes: bytes,
+                               orig_front: bytes = None, orig_back: bytes = None) -> dict | None:
     """
-    PRIMARY path: send available card images in ONE Gemini call.
-    Handles both double-sided and single-sided cards.
-    Returns dict with all 8 fields, or None on failure.
+    PRIMARY: Send both card images in ONE Gemini call.
+    Returns complete contact dict or None on failure.
 
-    Uses 1 API call instead of 2 — avoids rate limiting.
+    If preprocessed images fail (malformed JSON / empty result),
+    automatically retries with original unprocessed images.
     """
     if not GEMINI_API_KEY:
         return None
 
-    # Check which sides we have
-    has_front = bool(front_bytes)
-    has_back = bool(back_bytes)
-    
-    if not has_front and not has_back:
+    def _do(fb: bytes, bb: bytes):
+        front_b64 = _prepare_image(fb)
+        back_b64  = _prepare_image(bb)
+
+        # Check if front and back are identical (single-sided card)
+        if front_b64 == back_b64:
+            parts = [
+                {"text": "This is a visiting card (single side):"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": front_b64}},
+                {"text": _MASTER_PROMPT},
+            ]
+        else:
+            parts = [
+                {"text": "FRONT side of visiting card:"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": front_b64}},
+                {"text": "BACK side of visiting card:"},
+                {"inline_data": {"mime_type": "image/jpeg", "data": back_b64}},
+                {"text": _MASTER_PROMPT},
+            ]
+
+        raw    = _call_gemini(parts, temperature=0.05)
+        data   = _parse_json(raw)
+        result = {k: str(data.get(k, '') or '').strip() for k in _FIELDS}
+
+        if not any(result.values()):
+            raise ValueError("all fields empty")
+        return result
+
+    # First attempt with preprocessed images
+    result = _with_retry(_do, front_bytes, back_bytes)
+
+    # If failed AND we have original images, retry with originals
+    if not result and orig_front and orig_back:
+        print("  🔄 Retrying with original (unprocessed) images...")
+        result = _with_retry(_do, orig_front, orig_back)
+
+    if result:
+        # Clear garbage names
+        if _looks_like_garbage_name(result.get('name', '')):
+            bad = result.get('name', '')
+            result['name'] = ''
+            if bad:
+                print(f"  ⚠️ Garbled name cleared: '{bad}'")
+
+        found = sum(1 for v in result.values() if v)
+        print(f"  ✅ Gemini extracted: {found}/8 fields  name='{result.get('name', '')}'")
+
+    return result
+
+
+def gemini_extract_single_card(image_bytes: bytes) -> dict | None:
+    """
+    Extract from a single card image (front-only cards).
+    """
+    if not GEMINI_API_KEY:
         return None
 
     def _do():
-        if has_front and has_back:
-            # Both sides available - use existing logic
-            front_b64 = _prepare_image(front_bytes)
-            back_b64  = _prepare_image(back_bytes)
-            raw = _call_gemini_with_two_images(_BOTH_CARDS_PROMPT, front_b64, back_b64,
-                                               temperature=0.05)
-        elif has_front:
-            # Only front side available
-            front_b64 = _prepare_image(front_bytes)
-            raw = _call_gemini_with_image(_SINGLE_CARD_PROMPT.format(side="front"), front_b64,
-                                          temperature=0.05)
-        else:
-            # Only back side available
-            back_b64 = _prepare_image(back_bytes)
-            raw = _call_gemini_with_image(_SINGLE_CARD_PROMPT.format(side="back"), back_b64,
-                                          temperature=0.05)
-        
-        data = _parse_json_response(raw)
+        img_b64 = _prepare_image(image_bytes)
+        parts = [
+            {"text": "This is a visiting card:"},
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+            {"text": _MASTER_PROMPT},
+        ]
+        raw    = _call_gemini(parts, temperature=0.05)
+        data   = _parse_json(raw)
         result = {k: str(data.get(k, '') or '').strip() for k in _FIELDS}
         if not any(result.values()):
             raise ValueError("all fields empty")
         return result
 
     result = _with_retry(_do)
-
     if result:
-        # Check for garbage name and clear it
-        name = result.get('name', '')
-        if _looks_like_garbage_name(name):
-            print(f"  ⚠️ Garbled name cleared: '{name}'")
-            result['name'] = ''
-
-        found = sum(1 for v in result.values() if v)
-        sides_info = "both-sides" if has_front and has_back else ("front-only" if has_front else "back-only")
-        print(f"  ✅ Gemini {sides_info}: {found}/8 fields  name='{result.get('name', '')}'")
-
-    return result
-
-
-def gemini_extract_structured(image_bytes: bytes,
-                               original_bytes: bytes | None = None) -> dict | None:
-    """
-    Single-image structured extraction (kept for compatibility).
-    Prefer gemini_extract_both_cards() for new code.
-    """
-    if not GEMINI_API_KEY:
-        return None
-
-    def _do(img_bytes: bytes):
-        img_b64 = _prepare_image(img_bytes)
-        raw = _call_gemini_with_image(_STRUCTURED_PROMPT, img_b64, temperature=0.05)
-        data = _parse_json_response(raw)
-        result = {k: str(data.get(k, '') or '').strip() for k in _FIELDS}
-        if not any(result.values()):
-            raise ValueError("all fields empty")
-        return result
-
-    result = _with_retry(_do, image_bytes)
-
-    if result:
-        name = result.get('name', '')
-        if _looks_like_garbage_name(name):
+        if _looks_like_garbage_name(result.get('name', '')):
             result['name'] = ''
         found = sum(1 for v in result.values() if v)
-        print(f"  ✅ Gemini structured: {found}/8 fields  name='{result.get('name', '')}'")
-
+        print(f"  ✅ Gemini single-card: {found}/8 fields")
     return result
 
 
 def gemini_enrich_from_text(raw_text: str, current_contact: dict) -> dict:
     """
-    LAST-RESORT ENRICHMENT: text-only Gemini call to fill empty fields.
-
-    Sends raw OCR text + already-found fields to Gemini.
-    Asks it to fill ONLY the missing fields.
-    Returns enriched contact dict.
+    Text-only enrichment: fill empty fields using raw OCR text.
+    No image needed — uses 1 API call.
     """
-    if not GEMINI_API_KEY:
-        return current_contact
-
-    if not raw_text or not raw_text.strip():
+    if not GEMINI_API_KEY or not raw_text or not raw_text.strip():
         return current_contact
 
     missing = [k for k in _FIELDS if not (current_contact.get(k) or '').strip()]
     found   = [k for k in _FIELDS if (current_contact.get(k) or '').strip()]
 
     if not missing:
-        print("  ✅ Gemini enrich: all fields already filled, skipping")
         return current_contact
 
-    print(f"  🔍 Gemini enrich: filling {len(missing)} empty fields: {missing}")
+    print(f"  🔍 Enriching {len(missing)} empty fields: {missing}")
 
-    already_lines = '\n'.join(
-        f'  {k}: {current_contact[k]}' for k in found
-    ) or '  (none yet)'
-
-    field_descriptions = {
-        'name':        'Full name of the person (not company, not slogan)',
-        'phone':       'Mobile phone number(s) — format +91 XXXXX XXXXX',
-        'email':       'Email address (any TLD: .com, .in, .energy, .io, etc.)',
-        'designation': 'Job title / designation',
-        'company':     'Company or organization name',
-        'address':     'Full postal address with street, city, PIN code',
-        'website':     'Website URL (any TLD, include www. if shown)',
-        'gstin':       'GST identification number (15 characters)',
+    already = '\n'.join(f'  {k}: {current_contact[k]}' for k in found) or '  (none)'
+    field_desc = {
+        'name':        'Full person name (2-4 words, title case)',
+        'phone':       'Mobile number → format +91 XXXXX XXXXX',
+        'email':       'Email address (any TLD)',
+        'designation': 'Job title',
+        'company':     'Company name',
+        'address':     'Full postal address with city and PIN',
+        'website':     'Website URL',
+        'gstin':       '15-character GST number',
     }
-    missing_lines = '\n'.join(
-        f'  {k}: {field_descriptions[k]}' for k in missing
-    )
-    missing_keys_list = ', '.join(f'"{k}"' for k in missing)
+    missing_desc = '\n'.join(f'  {k}: {field_desc[k]}' for k in missing)
+    keys_list    = ', '.join(f'"{k}"' for k in missing)
 
-    prompt = _ENRICH_PROMPT_TEMPLATE.format(
-        raw_text          = raw_text.strip()[:3000],
-        already_found     = already_lines,
-        missing_fields    = missing_lines,
-        missing_keys_list = missing_keys_list,
-    )
+    prompt = f"""Parse this visiting card text and find ONLY these missing fields.
+
+RAW CARD TEXT:
+---
+{raw_text.strip()[:3000]}
+---
+
+ALREADY FOUND (do NOT change):
+{already}
+
+FIND ONLY THESE MISSING FIELDS:
+{missing_desc}
+
+Return ONLY a JSON object with keys: {keys_list}
+Use "" for any field not found in the text.
+No markdown, no explanation."""
 
     def _do():
-        raw = _call_gemini_text_only(prompt, temperature=0.05)
-        return _parse_json_response(raw)
+        raw  = _call_gemini([{"text": prompt}], temperature=0.05)
+        return _parse_json(raw)
 
     data = _with_retry(_do)
-
     if not data:
-        print("  ⚠️ Gemini enrich: failed, keeping existing values")
         return current_contact
 
     enriched = dict(current_contact)
-    filled = []
+    filled   = []
     for key in missing:
         val = str(data.get(key, '') or '').strip()
         if val:
@@ -606,48 +514,24 @@ def gemini_enrich_from_text(raw_text: str, current_contact: dict) -> dict:
             filled.append(f"{key}='{val[:40]}'")
 
     if filled:
-        print(f"  ✅ Gemini enrich: filled {len(filled)} fields → {', '.join(filled)}")
-    else:
-        print("  ⚠️ Gemini enrich: no new fields found in text")
-
+        print(f"  ✅ Enriched: {', '.join(filled)}")
     return enriched
 
 
 def gemini_ocr(image_bytes: bytes, model: str = None) -> str:
-    """LEGACY path: raw text extraction used by ocr.py."""
+    """Raw text extraction (legacy fallback)."""
     if not GEMINI_API_KEY:
         return ''
 
     def _do():
         img_b64 = _prepare_image(image_bytes)
-        text = _call_gemini_with_image(_RAW_TEXT_PROMPT, img_b64, temperature=0.1)
+        parts = [
+            {"text": "Extract ALL visible text from this visiting card. Return only the text, preserving line breaks. No explanation."},
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+        ]
+        text = _call_gemini(parts, temperature=0.1)
         if text:
             print(f"  ✅ Gemini raw OCR: {len(text.split())} words")
         return text
 
-    result = _with_retry(_do)
-    return result or ''
-
-
-# ── Self-test ─────────────────────────────────────────────────────────────────
-
-if __name__ == '__main__':
-    import sys
-
-    if len(sys.argv) > 1:
-        path = sys.argv[1]
-        print(f"Testing Gemini with: {path}")
-        with open(path, 'rb') as f:
-            raw = f.read()
-
-        print("\n── Structured extraction (image) ──")
-        t0 = time.time()
-        result = gemini_extract_structured(raw)
-        print(f"Time: {time.time()-t0:.2f}s")
-        if result:
-            for k, v in result.items():
-                print(f"  {k:12}: {v or '—'}")
-        else:
-            print("  Failed")
-    else:
-        print("Usage: python gemini_ocr.py <image_path>")
+    return _with_retry(_do) or ''

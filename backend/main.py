@@ -41,7 +41,7 @@ from gemini_ocr import (
     _looks_like_garbage_name,
 )
 from image_preprocessor import fast_preprocess, full_preprocess
-from ocr import tesseract_extract
+from ocr import tesseract_extract, easyocr_extract
 
 app = FastAPI(title="AI Smart Visiting Card API", version="6.0.0")
 
@@ -84,6 +84,19 @@ def _tesseract_fallback(image_bytes: bytes) -> str:
     return tesseract_extract(image_bytes) or ''
 
 
+def _easyocr_fallback(image_bytes: bytes) -> str:
+    """EasyOCR fallback — much better than Tesseract for real photos."""
+    try:
+        from ocr import easyocr_extract
+        result = easyocr_extract(image_bytes)
+        if result and len(result.strip()) > 5:
+            return result
+    except Exception as e:
+        print(f"  EasyOCR fallback error: {e}")
+    # Last resort: Tesseract
+    return tesseract_extract(image_bytes) or ''
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -97,42 +110,26 @@ def home():
 
 @app.post("/scan-card/")
 async def scan_card(
-    front_file: UploadFile = File(None),
-    back_file:  UploadFile = File(None),
+    front_file: UploadFile = File(...),
+    back_file:  UploadFile = File(...),
 ):
     try:
         t0 = time.time()
 
-        # ── 1. Validate that at least one file is provided ──────────────────
-        if not front_file and not back_file:
-            return {"status": "error",
-                    "message": "Please provide at least one card image (front or back)"}
-
-        # Validate file types for provided files
-        files_to_check = []
-        if front_file and front_file.filename:
-            files_to_check.append(("Front", front_file))
-        if back_file and back_file.filename:
-            files_to_check.append(("Back", back_file))
-
-        for label, f in files_to_check:
+        # ── 1. Validate file types ──────────────────────────────────────────
+        for label, f in (("Front", front_file), ("Back", back_file)):
             ct = f.content_type or ''
             if not ct.startswith('image/'):
                 return {"status": "error",
                         "message": f"{label} file is not an image (got {ct})"}
 
         # ── 2. Read bytes ───────────────────────────────────────────────────
-        front_bytes = await front_file.read() if front_file and front_file.filename else b''
-        back_bytes  = await back_file.read() if back_file and back_file.filename else b''
+        front_bytes = await front_file.read()
+        back_bytes  = await back_file.read()
 
-        if not front_bytes and not back_bytes:
+        if not front_bytes or not back_bytes:
             return {"status": "error",
-                    "message": "No valid image data received"}
-
-        # Determine which sides we have
-        has_front = bool(front_bytes)
-        has_back = bool(back_bytes)
-        single_sided = has_front ^ has_back  # XOR: exactly one side
+                    "message": "One or both uploaded files are empty"}
 
         t_ocr = time.time()
         contact    = {k: '' for k in _FIELDS}
@@ -140,46 +137,35 @@ async def scan_card(
         front_text = ''
         back_text  = ''
 
-        # Base64 for before/after display (only for available sides)
-        before_front_b64 = _to_b64(front_bytes) if has_front else ''
-        before_back_b64  = _to_b64(back_bytes) if has_back else ''
+        # Base64 for before/after display
+        before_front_b64 = _to_b64(front_bytes)
+        before_back_b64  = _to_b64(back_bytes)
         after_front_b64  = ''
         after_back_b64   = ''
 
         # ══════════════════════════════════════════════════════════════════
-        # FAST PATH: ONE Gemini call with available images
+        # FAST PATH: ONE Gemini call with both images
         # ══════════════════════════════════════════════════════════════════
         if GEMINI_API_KEY:
 
-            # Step A: preprocess available images in parallel
+            # Step A: preprocess both images in parallel (~0.1s each)
             loop = asyncio.get_event_loop()
-            
-            if has_front and has_back:
-                # Both sides available
-                fp_front, fp_back = await asyncio.gather(
-                    loop.run_in_executor(_pool, fast_preprocess, front_bytes),
-                    loop.run_in_executor(_pool, fast_preprocess, back_bytes),
-                )
-                after_front_b64 = _to_b64(fp_front)
-                after_back_b64  = _to_b64(fp_back)
-            elif has_front:
-                # Only front side
-                fp_front = await loop.run_in_executor(_pool, fast_preprocess, front_bytes)
-                fp_back = b''  # Empty for Gemini call
-                after_front_b64 = _to_b64(fp_front)
-            else:
-                # Only back side
-                fp_front = b''  # Empty for Gemini call
-                fp_back = await loop.run_in_executor(_pool, fast_preprocess, back_bytes)
-                after_back_b64 = _to_b64(fp_back)
-
+            fp_front, fp_back = await asyncio.gather(
+                loop.run_in_executor(_pool, fast_preprocess, front_bytes),
+                loop.run_in_executor(_pool, fast_preprocess, back_bytes),
+            )
             t_prep = round(time.time() - t_ocr, 2)
-            print(f"  ⚡ Preprocessing: {t_prep}s ({'single-sided' if single_sided else 'double-sided'})")
+            print(f"  ⚡ Preprocessing: {t_prep}s")
 
-            # Step B: ONE Gemini call with available images
+            after_front_b64 = _to_b64(fp_front)
+            after_back_b64  = _to_b64(fp_back)
+
+            # Step B: ONE Gemini call with both images
+            # Pass original bytes as fallback in case preprocessed images fail
             t_gem = time.time()
             gem_result = await loop.run_in_executor(
-                _pool, gemini_extract_both_cards, fp_front, fp_back
+                _pool, gemini_extract_both_cards,
+                fp_front, fp_back, front_bytes, back_bytes
             )
             t_gem_done = round(time.time() - t_gem, 2)
             print(f"  ⚡ Gemini extraction: {t_gem_done}s")
@@ -205,47 +191,38 @@ async def scan_card(
                     contact['designation'] = _clean_designation(contact['designation'])
 
         # ══════════════════════════════════════════════════════════════════
-        # FALLBACK PATH: Tesseract (when Gemini unavailable or returned nothing)
+        # FALLBACK PATH: EasyOCR → Tesseract (when Gemini unavailable)
         # ══════════════════════════════════════════════════════════════════
         if not any(contact.values()):
-            print(f"  ⚠️ Gemini unavailable — using Tesseract fallback ({'single-sided' if single_sided else 'double-sided'})")
+            print("  ⚠️ Gemini unavailable — using EasyOCR/Tesseract fallback")
 
             loop = asyncio.get_event_loop()
-            
-            if has_front and has_back:
-                fp_front, fp_back = await asyncio.gather(
-                    loop.run_in_executor(_pool, full_preprocess, front_bytes),
-                    loop.run_in_executor(_pool, full_preprocess, back_bytes),
-                )
-                after_front_b64 = _to_b64(fp_front)
-                after_back_b64  = _to_b64(fp_back)
-                
-                front_fut = _pool.submit(_tesseract_fallback, fp_front)
-                back_fut  = _pool.submit(_tesseract_fallback, fp_back)
-                front_text = front_fut.result() or ''
-                back_text  = back_fut.result()  or ''
-            elif has_front:
-                fp_front = await loop.run_in_executor(_pool, full_preprocess, front_bytes)
-                after_front_b64 = _to_b64(fp_front)
-                front_text = _tesseract_fallback(fp_front) or ''
-                back_text = ''
-            else:
-                fp_back = await loop.run_in_executor(_pool, full_preprocess, back_bytes)
-                after_back_b64 = _to_b64(fp_back)
-                front_text = ''
-                back_text = _tesseract_fallback(fp_back) or ''
+            fp_front, fp_back = await asyncio.gather(
+                loop.run_in_executor(_pool, full_preprocess, front_bytes),
+                loop.run_in_executor(_pool, full_preprocess, back_bytes),
+            )
+            after_front_b64 = _to_b64(fp_front)
+            after_back_b64  = _to_b64(fp_back)
+
+            front_fut = _pool.submit(_easyocr_fallback, fp_front)
+            back_fut  = _pool.submit(_easyocr_fallback, fp_back)
+            front_text = front_fut.result() or ''
+            back_text  = back_fut.result()  or ''
+
+            print(f"  📝 Front OCR ({len(front_text)} chars): {front_text[:100]}")
+            print(f"  📝 Back OCR ({len(back_text)} chars): {back_text[:100]}")
 
             if len((front_text + back_text).strip()) < 5:
                 return {
                     "status":  "error",
-                    "message": f"OCR failed to extract any text from the {'single' if single_sided else 'provided'} image(s). Use a clearer, well-lit image.",
+                    "message": "OCR failed to extract any text. Use a clearer, well-lit image.",
                 }
 
             contact    = process_visiting_card(front_text, back_text)
-            ocr_engine = 'tesseract'
+            ocr_engine = 'easyocr'
 
         ocr_time = round(time.time() - t_ocr, 2)
-        print(f"🔍 OCR total: {ocr_time}s  engine={ocr_engine}  sides={'single' if single_sided else 'double'}")
+        print(f"🔍 OCR total: {ocr_time}s  engine={ocr_engine}")
 
         # ── 3. Validate & clean ─────────────────────────────────────────────
         t_val = time.time()
@@ -283,7 +260,7 @@ async def scan_card(
                 else:
                     return {
                         "status":  "error",
-                        "message": f"Could not extract any contact information from the {'single' if single_sided else 'provided'} image(s). Try a clearer image or provide both sides if available.",
+                        "message": "Could not extract any contact information. Try a clearer image.",
                     }
 
         # ── 5. Duplicate check ──────────────────────────────────────────────
@@ -305,14 +282,6 @@ async def scan_card(
 
         # ── 6. Save ─────────────────────────────────────────────────────────
         t_db = time.time()
-        
-        # Update image formats to reflect what was actually provided
-        image_formats = []
-        if front_file and front_file.content_type:
-            image_formats.append(front_file.content_type)
-        if back_file and back_file.content_type:
-            image_formats.append(back_file.content_type)
-        
         contact_id = database.insert_contact(
             name                = contact.get('name', ''),
             phone               = contact.get('phone', ''),
@@ -323,23 +292,21 @@ async def scan_card(
             website             = contact.get('website', ''),
             gstin               = contact.get('gstin', ''),
             raw_text            = (front_text + '\n' + back_text)[:1000],
-            image_formats       = ','.join(image_formats),
+            image_formats       = f"{front_file.content_type},{back_file.content_type}",
             ocr_engine          = ocr_engine,
             validation_warnings = json.dumps(val_warnings) if val_warnings else '',
         )
         db_time = round(time.time() - t_db, 2)
 
         total = round(time.time() - t0, 2)
-        sides_info = f"{'single-sided' if single_sided else 'double-sided'}"
-        print(f"⚡ Total: {total}s ({sides_info})")
+        print(f"⚡ Total: {total}s")
 
         return {
             "status":       "success",
-            "message":      f"Contact saved in {total}s ({sides_info})",
+            "message":      f"Contact saved in {total}s",
             "contact_id":   contact_id,
             "contact_info": contact,
             "ocr_engine":   ocr_engine,
-            "single_sided": single_sided,
             "images": {
                 "before_front": before_front_b64,
                 "before_back":  before_back_b64,

@@ -12,6 +12,13 @@ import pytesseract
 from PIL import Image, ImageOps
 from concurrent.futures import ThreadPoolExecutor
 
+# ── Fix EasyOCR / Pillow 10+ compatibility ────────────────────────────────────
+# PIL.Image.ANTIALIAS was removed in Pillow 10. EasyOCR still uses it.
+# Patch it BEFORE importing easyocr so the internal modules see it.
+import PIL.Image as _pil_img
+if not hasattr(_pil_img, 'ANTIALIAS'):
+    _pil_img.ANTIALIAS = _pil_img.LANCZOS
+
 from gemini_ocr import gemini_ocr, GEMINI_API_KEY
 
 # ── EasyOCR (lazy loaded) ─────────────────────────────────────────────────────
@@ -73,28 +80,22 @@ def pil_to_bgr(pil: Image.Image) -> np.ndarray:
 # ── EasyOCR Scene Text Recognition ────────────────────────────────────────────
 
 def easyocr_extract(image_bytes: bytes) -> str:
-    """Extract text using EasyOCR - production quality"""
+    """Extract text using EasyOCR."""
     if not load_easyocr():
         return ''
-    
     try:
-        # Load image with good resolution
         pil = load_pil(image_bytes)
-        pil = resize_pil(pil, 1200)  # Good balance
-        
+        pil = resize_pil(pil, 1200)
         img_array = np.array(pil)
         detections = _easyocr_reader.readtext(img_array)
-        
         texts = []
         for (bbox, text, conf) in detections:
-            if conf > 0.4:  # Balanced confidence
+            if conf > 0.4:
                 text = text.strip()
                 if len(text) >= 2:
-                    # Filter obvious garbage
                     alpha_count = sum(c.isalpha() or c.isdigit() for c in text)
-                    if alpha_count >= len(text) * 0.3:  # At least 30% alphanumeric
+                    if alpha_count >= len(text) * 0.3:
                         texts.append(text)
-        
         return '\n'.join(texts)
     except Exception as e:
         print(f"  EasyOCR error: {e}")
