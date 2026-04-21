@@ -380,6 +380,28 @@ def delete_contact(contact_id: int):
     return {"status": "success", "message": f"Contact {contact_id} deleted"}
 
 
+@app.put("/contacts/{contact_id}")
+def update_contact(contact_id: int, data: dict):
+    """Update contact fields — called when user edits extraction results."""
+    row = database.get_contact_by_id(contact_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    # Only allow updating the 8 contact fields
+    allowed = {'name', 'phone', 'email', 'designation', 'company',
+               'address', 'website', 'gstin'}
+    updates = {k: str(v).strip() for k, v in data.items() if k in allowed}
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    success = database.update_contact(contact_id, **updates)
+    if not success:
+        raise HTTPException(status_code=500, detail="Update failed")
+
+    return {"status": "success", "message": f"Contact {contact_id} updated", "updated": updates}
+
+
 @app.get("/recommend/{service}")
 def get_recommendation(service: str):
     contacts = database.get_all_contacts()
