@@ -13,3 +13,4 @@ spacy==3.7.2
 nltk==3.8.1
 fuzzywuzzy==0.18.0
 Levenshtein==0.25.0
+mysql-connector-python==9.6.0
