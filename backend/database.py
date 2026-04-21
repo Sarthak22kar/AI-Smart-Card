@@ -145,6 +145,7 @@ def insert_contact(
     address: str,
     website: str = '',
     gstin: str = '',
+    services: str = '',
     raw_text: str = '',
     image_formats: str = '',
     ocr_engine: str = '',
@@ -166,19 +167,19 @@ def insert_contact(
     sql = """
         INSERT INTO contacts
             (name, phone, email, designation, company, address,
-             website, gstin, raw_text, extraction_confidence,
+             website, gstin, services, raw_text, extraction_confidence,
              ocr_engine, image_formats, validation_warnings,
              created_at, updated_at)
         VALUES
             (%s, %s, %s, %s, %s, %s,
-             %s, %s, %s, %s,
+             %s, %s, %s, %s, %s,
              %s, %s, %s,
              %s, %s)
     """
     values = (
         fields['name'], fields['phone'], fields['email'],
         fields['designation'], fields['company'], fields['address'],
-        fields['website'], fields['gstin'],
+        fields['website'], fields['gstin'], _clean(services)[:500],
         raw_text[:1000], confidence,
         _clean(ocr_engine), _clean(image_formats), _clean(validation_warnings),
         now, now,
@@ -202,7 +203,7 @@ def update_contact(contact_id: int, **kwargs) -> bool:
         return False
 
     allowed = {'name', 'phone', 'email', 'designation', 'company',
-               'address', 'website', 'gstin'}
+               'address', 'website', 'gstin', 'services'}
     updates = {k: _clean(v) for k, v in kwargs.items() if k in allowed}
     if not updates:
         return False
@@ -251,7 +252,7 @@ def get_all_contacts() -> list:
     cur = con.cursor()
     cur.execute("""
         SELECT id, name, phone, email, designation, company, address,
-               website, gstin, extraction_confidence, created_at
+               website, gstin, services, extraction_confidence, created_at
         FROM contacts
         ORDER BY created_at DESC
     """)
@@ -385,7 +386,7 @@ def search_contacts_advanced(query: str) -> list:
     cur = con.cursor()
     cur.execute("""
         SELECT id, name, phone, email, designation, company, address,
-               website, gstin, extraction_confidence, created_at
+               website, gstin, services, extraction_confidence, created_at
         FROM contacts
         WHERE name        LIKE %s
            OR phone       LIKE %s
@@ -393,9 +394,10 @@ def search_contacts_advanced(query: str) -> list:
            OR designation LIKE %s
            OR company     LIKE %s
            OR address     LIKE %s
+           OR services    LIKE %s
         ORDER BY extraction_confidence DESC
         LIMIT 50
-    """, (like, like, like, like, like, like))
+    """, (like, like, like, like, like, like, like))
     rows = cur.fetchall()
     cur.close(); con.close()
     return rows

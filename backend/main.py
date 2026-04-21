@@ -347,8 +347,9 @@ def get_contacts():
             "address":               c[6],
             "website":               c[7],
             "gstin":                 c[8],
-            "extraction_confidence": c[9],
-            "created_at":            c[10],
+            "services":              c[9],
+            "extraction_confidence": c[10],
+            "created_at":            str(c[11]) if c[11] else '',
         })
     return {"contacts": result, "total": len(result)}
 
@@ -389,7 +390,7 @@ def update_contact(contact_id: int, data: dict):
 
     # Only allow updating the 8 contact fields
     allowed = {'name', 'phone', 'email', 'designation', 'company',
-               'address', 'website', 'gstin'}
+               'address', 'website', 'gstin', 'services'}
     updates = {k: str(v).strip() for k, v in data.items() if k in allowed}
 
     if not updates:
