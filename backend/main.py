@@ -588,3 +588,108 @@ def search_contacts(query: str = ""):
 @app.get("/stats/")
 def get_stats():
     return {"status": "success", "statistics": database.get_contact_stats()}
+
+
+@app.post("/extract-keywords/")
+def extract_keywords(request: dict):
+    """
+    Extract service keywords from spoken/typed text.
+    Input:  { "text": "my AC is not working I need someone to fix it" }
+    Output: { "keywords": ["ac", "electrician"], "search": "ac" }
+    """
+    text = (request.get("text") or "").lower().strip()
+    if not text:
+        return {"keywords": [], "search": ""}
+
+    from recommendation import KEYWORD_MAP
+
+    # All known service keywords (flat list)
+    all_keywords = list(KEYWORD_MAP.keys())
+    # Also add common trigger phrases
+    phrase_map = {
+        "fix":        ["repair", "technician", "mechanic"],
+        "repair":     ["technician", "mechanic", "engineer"],
+        "need":       [],
+        "looking for": [],
+        "find me":    [],
+        "broken":     ["repair", "technician"],
+        "not working": ["repair", "technician", "engineer"],
+        "leaking":    ["plumber"],
+        "pipe":       ["plumber"],
+        "wiring":     ["electrician"],
+        "light":      ["electrician"],
+        "power":      ["electrician"],
+        "water":      ["plumber"],
+        "tax":        ["ca"],
+        "gst":        ["ca"],
+        "court":      ["lawyer"],
+        "legal":      ["lawyer"],
+        "property":   ["real estate"],
+        "house":      ["real estate", "architect"],
+        "car":        ["mechanic"],
+        "vehicle":    ["mechanic"],
+        "sick":       ["doctor"],
+        "medicine":   ["doctor"],
+        "hospital":   ["doctor"],
+        "website":    ["it"],
+        "software":   ["it"],
+        "app":        ["it"],
+        "cooling":    ["ac"],
+        "hot":        ["ac"],
+        "cold":       ["ac"],
+        "paint":      ["painter"],
+        "wall":       ["painter", "carpenter"],
+        "furniture":  ["carpenter"],
+        "wood":       ["carpenter"],
+        "loan":       ["banking"],
+        "insurance":  ["insurance"],
+        "invest":     ["banking", "ca"],
+        "transport":  ["logistics"],
+        "delivery":   ["logistics"],
+        "cargo":      ["logistics"],
+        "solar":      ["solar"],
+        "panel":      ["solar"],
+        "energy":     ["solar", "electrician"],
+        "event":      ["event management"],
+        "wedding":    ["event management"],
+        "catering":   ["catering"],
+        "food":       ["catering"],
+        "photo":      ["photographer"],
+        "video":      ["videographer"],
+        "design":     ["architect", "interior designer"],
+        "interior":   ["interior designer"],
+    }
+
+    found_keywords = set()
+
+    # Check direct keyword matches
+    for kw in all_keywords:
+        if kw in text:
+            found_keywords.add(kw)
+
+    # Check phrase triggers
+    for phrase, related in phrase_map.items():
+        if phrase in text:
+            for r in related:
+                found_keywords.add(r)
+
+    # Check individual words against keyword map
+    words = text.split()
+    for word in words:
+        word = word.strip(".,!?")
+        if word in all_keywords:
+            found_keywords.add(word)
+        # Partial match (e.g. "electrical" → "electrician")
+        for kw in all_keywords:
+            if len(word) >= 4 and (word in kw or kw in word):
+                found_keywords.add(kw)
+
+    keywords = list(found_keywords)
+    # Pick the most specific keyword as primary search
+    primary = keywords[0] if keywords else ""
+
+    return {
+        "keywords": keywords,
+        "search": primary,
+        "text": text,
+    }

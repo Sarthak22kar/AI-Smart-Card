@@ -362,9 +362,14 @@ export default function SmartSearch() {
   const [mode,      setMode]      = useState<"search" | "chat">("search");
   const [gps,       setGps]       = useState<{ lat: number; lng: number } | null>(null);
   const [gpsStatus, setGpsStatus] = useState("");
+  // Ambient keyword listener
+  const [ambient,       setAmbient]       = useState(false);
+  const [detectedWord,  setDetectedWord]  = useState("");
+  const [ambientStatus, setAmbientStatus] = useState("");
 
   const recognRef   = useRef<SpeechRecognition | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ambientRef  = useRef<SpeechRecognition | null>(null);
 
   // Get GPS location
   const getLocation = () => {
@@ -394,6 +399,79 @@ export default function SmartSearch() {
     finally { setLoading(false); }
   }, [gps]);
 
+  // ── Ambient keyword listener ────────────────────────────────────────────────
+  // Listens continuously, extracts service keywords, auto-searches
+  const startAmbient = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setVoiceErr("Use Chrome for voice features"); return; }
+
+    setAmbient(true);
+    setAmbientStatus("🎤 Listening for keywords...");
+    setVoiceErr("");
+
+    const r = new SR();
+    r.lang = "en-IN";
+    r.continuous = true;       // keep listening
+    r.interimResults = true;
+
+    r.onresult = async (e: any) => {
+      // Get latest transcript
+      const transcript = Array.from(e.results)
+        .map((x: any) => x[0].transcript)
+        .join(" ");
+
+      // Only process final results to avoid too many API calls
+      if (!e.results[e.results.length - 1].isFinal) return;
+
+      // Send to backend to extract keywords
+      try {
+        const res = await fetch("http://127.0.0.1:8000/extract-keywords/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: transcript }),
+        });
+        const data = await res.json();
+
+        if (data.keywords && data.keywords.length > 0) {
+          const kw = data.search || data.keywords[0];
+          setDetectedWord(kw);
+          setAmbientStatus(`🔑 Detected: "${kw}" — searching...`);
+          setQuery(kw);
+          doSearch(kw);
+          setMode("search");
+        }
+      } catch {
+        // silently ignore
+      }
+    };
+
+    r.onerror = (e: any) => {
+      if (e.error !== "no-speech") {
+        setAmbient(false);
+        setAmbientStatus("");
+        setVoiceErr(`Mic error: ${e.error}`);
+      }
+    };
+
+    r.onend = () => {
+      // Restart if still in ambient mode
+      if (ambientRef.current) {
+        try { ambientRef.current.start(); } catch { /* ignore */ }
+      }
+    };
+
+    r.start();
+    ambientRef.current = r;
+  };
+
+  const stopAmbient = () => {
+    ambientRef.current?.stop();
+    ambientRef.current = null;
+    setAmbient(false);
+    setAmbientStatus("");
+    setDetectedWord("");
+  };
+
   const handleInput = (val: string) => {
     setQuery(val);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -420,6 +498,8 @@ export default function SmartSearch() {
   useEffect(() => () => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     recognRef.current?.stop();
+    ambientRef.current?.stop();
+    ambientRef.current = null;
   }, []);
 
   return (
@@ -489,10 +569,44 @@ export default function SmartSearch() {
             }}>
               {gps ? "📍 Location ON" : "📍 Use My Location"}
             </button>
+
+            {/* Ambient keyword listener toggle */}
+            <button
+              onClick={ambient ? stopAmbient : startAmbient}
+              style={{
+                padding: "5px 14px", borderRadius: "16px", border: "none",
+                backgroundColor: ambient ? "#dc3545" : "#6f42c1",
+                color: "white", cursor: "pointer", fontSize: "12px", fontWeight: 600,
+                animation: ambient ? "pulse 1.5s infinite" : "none",
+              }}>
+              {ambient ? "⏹ Stop Listening" : "👂 Smart Listen"}
+            </button>
+
             {gpsStatus && <span style={{ fontSize: "11px", color: "#888" }}>{gpsStatus}</span>}
             {listening && <span style={{ fontSize: "12px", color: "#dc3545", fontWeight: 600 }}>🎤 Listening...</span>}
             {voiceErr && <span style={{ fontSize: "11px", color: "#dc3545" }}>{voiceErr}</span>}
           </div>
+
+          {/* Ambient status banner */}
+          {ambient && (
+            <div style={{
+              padding: "10px 14px", marginBottom: "10px",
+              backgroundColor: "#f3e8ff", borderRadius: "10px",
+              border: "1px solid #d8b4fe", fontSize: "13px",
+              display: "flex", alignItems: "center", gap: "10px",
+            }}>
+              <span style={{ fontSize: "20px", animation: "pulse 1s infinite" }}>👂</span>
+              <div>
+                <div style={{ fontWeight: 600, color: "#6f42c1" }}>{ambientStatus}</div>
+                {detectedWord && (
+                  <div style={{ fontSize: "12px", color: "#555" }}>
+                    Last keyword: <strong style={{ color: "#007bff" }}>"{detectedWord}"</strong>
+                    {" "}→ showing matching contacts below
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Quick chips */}
           {!searched && (
