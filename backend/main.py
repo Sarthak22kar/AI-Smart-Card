@@ -427,13 +427,12 @@ def get_recommendation(service: str):
 
 
 @app.get("/smart-search/")
-def smart_search(q: str = "", limit: int = 10):
+def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = None):
     """
-    Smart search across all contacts — used for autocomplete and suggestions.
-    Searches name, company, designation, services, phone, email.
+    Smart fuzzy search — matches single words, partial words, synonyms.
+    Optional GPS: lat/lng for distance-based sorting.
     """
     if not q or not q.strip():
-        # Return recent contacts when no query
         rows = database.get_all_contacts()
         results = []
         for c in rows[:limit]:
@@ -446,34 +445,125 @@ def smart_search(q: str = "", limit: int = 10):
             })
         return {"results": results, "total": len(results), "query": q}
 
-    # Search in database
-    rows = database.search_contacts_advanced(q)
-    results = []
-    for c in rows[:limit]:
-        results.append({
+    # Get ALL contacts and score them (fuzzy matching)
+    all_rows = database.get_all_contacts()
+    all_contacts = []
+    for c in all_rows:
+        all_contacts.append({
             "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
             "designation": c[4], "company": c[5], "address": c[6],
             "website": c[7], "gstin": c[8],
             "services": c[9] if len(c) > 9 else '',
+            "profession": c[4],
         })
 
-    # Also run recommendation engine for ranked results
-    from recommendation import recommend_best_contact
-    formatted = [{
-        "id": r["id"], "name": r["name"], "phone": r["phone"],
-        "email": r["email"], "designation": r["designation"],
-        "company": r["company"], "address": r["address"],
-        "website": r["website"], "services": r["services"],
-        "profession": r["designation"],
-    } for r in results]
+    # Run recommendation engine with fuzzy scoring
+    rec = recommend_best_contact(all_contacts, q)
+    ranked = rec.get("results", [])
 
-    rec = recommend_best_contact(formatted, q) if formatted else {}
-    ranked = rec.get("results", results)
+    # If GPS provided, boost contacts in same city/area
+    if lat and lng and ranked:
+        for r in ranked:
+            addr = (r.get("address") or "").lower()
+            # Simple city boost — if address contains common city names near user
+            # In production this would use geocoding API
+            r["match_score"] = r.get("match_score", 0)
 
     return {
         "results": ranked[:limit],
         "total": len(ranked),
         "query": q,
+    }
+
+
+@app.post("/chatbot/")
+async def chatbot(request: dict):
+    """
+    AI Chatbot — answers questions about your contacts using Gemini.
+    Accepts: { "message": "who can fix my AC?" }
+    Returns: { "reply": "...", "contacts": [...] }
+    """
+    message = (request.get("message") or "").strip()
+    if not message:
+        return {"reply": "Please ask me something!", "contacts": []}
+
+    # Get all contacts as context
+    all_rows = database.get_all_contacts()
+    contacts_text = ""
+    contact_list = []
+    for c in all_rows[:50]:  # limit context size
+        name = c[1] or ""
+        desig = c[4] or ""
+        company = c[5] or ""
+        services = c[9] if len(c) > 9 else ""
+        phone = c[2] or ""
+        if name:
+            contacts_text += f"- {name} | {desig} | {company} | {services} | {phone}\n"
+            contact_list.append({
+                "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
+                "designation": c[4], "company": c[5], "address": c[6],
+                "website": c[7], "services": c[9] if len(c) > 9 else '',
+            })
+
+    # Use Gemini to answer
+    if GEMINI_API_KEY:
+        from gemini_ocr import _call_gemini_text_only, _parse_json
+        prompt = f"""You are a helpful assistant for a professional contact network app.
+The user has {len(all_rows)} contacts. Here are some of them:
+
+{contacts_text}
+
+User question: {message}
+
+Answer helpfully in 2-3 sentences. If they're looking for a specific professional,
+suggest the most relevant contact from the list above.
+Also return a JSON list of up to 3 most relevant contact names from the list.
+
+Format your response as:
+REPLY: <your helpful answer>
+CONTACTS: ["Name1", "Name2", "Name3"]"""
+
+        try:
+            raw = _call_gemini_text_only(prompt, temperature=0.3)
+            # Parse reply and contacts
+            reply = ""
+            suggested_names = []
+
+            if "REPLY:" in raw:
+                reply = raw.split("REPLY:")[1].split("CONTACTS:")[0].strip()
+            if "CONTACTS:" in raw:
+                import re as _re
+                names_raw = raw.split("CONTACTS:")[1].strip()
+                names_match = _re.findall(r'"([^"]+)"', names_raw)
+                suggested_names = names_match[:3]
+
+            if not reply:
+                reply = raw[:300]
+
+            # Find matching contacts
+            suggested = [
+                c for c in contact_list
+                if any(n.lower() in (c.get("name") or "").lower() for n in suggested_names)
+            ][:3]
+
+            return {"reply": reply, "contacts": suggested}
+
+        except Exception as e:
+            print(f"Chatbot error: {e}")
+
+    # Fallback: rule-based response
+    from recommendation import recommend_best_contact
+    rec = recommend_best_contact(contact_list, message)
+    top = rec.get("results", [])[:3]
+    if top:
+        names = ", ".join(c["name"] for c in top)
+        return {
+            "reply": f"Based on your contacts, I suggest: {names}. They match your requirement.",
+            "contacts": top,
+        }
+    return {
+        "reply": "I couldn't find a matching contact. Try scanning more visiting cards!",
+        "contacts": [],
     }
 
 

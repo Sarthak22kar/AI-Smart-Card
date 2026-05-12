@@ -57,10 +57,12 @@ def _expand_query(query: str) -> list:
 def _score_contact(contact: dict, keywords: list, query: str) -> float:
     """
     Score a contact against the search query.
+    Uses fuzzy/partial matching — even single word matches count.
     Returns 0.0 - 1.0
     """
     score = 0.0
-    q = query.lower()
+    q = query.lower().strip()
+    q_words = q.split()  # individual words from query
 
     # Fields to search in, with weights
     fields = {
@@ -76,15 +78,36 @@ def _score_contact(contact: dict, keywords: list, query: str) -> float:
         val = (contact.get(field) or '').lower()
         if not val:
             continue
-        # Exact query match
+
+        # Full query match (highest score)
         if q in val:
             score += weight * 1.0
-        else:
-            # Keyword match
-            for kw in keywords:
-                if kw in val:
-                    score += weight * 0.6
-                    break
+            continue
+
+        # Any single word from query matches (partial match)
+        word_match = False
+        for word in q_words:
+            if len(word) >= 2 and word in val:
+                score += weight * 0.7
+                word_match = True
+                break
+
+        if word_match:
+            continue
+
+        # Keyword expansion match
+        for kw in keywords:
+            if len(kw) >= 2 and kw in val:
+                score += weight * 0.5
+                break
+
+        # Partial word match (e.g. "elec" matches "electrician")
+        for word in q_words:
+            if len(word) >= 3:
+                for val_word in val.split():
+                    if word in val_word or val_word in word:
+                        score += weight * 0.3
+                        break
 
     # Bonus: has website (more established)
     if contact.get('website'):
@@ -92,6 +115,10 @@ def _score_contact(contact: dict, keywords: list, query: str) -> float:
 
     # Bonus: has email (contactable)
     if contact.get('email'):
+        score += 0.02
+
+    # Bonus: has phone (reachable)
+    if contact.get('phone'):
         score += 0.02
 
     return round(min(score, 1.0), 3)
