@@ -1,92 +1,141 @@
-def calculate_contact_score(contact):
-    """
-    Calculate final score based on the algorithm from project guide:
-    Final Score = (Review Score * 0.30) + (Response Rate * 0.20) + 
-                  (Website Presence * 0.15) + (Customer Interaction * 0.15) + 
-                  (Location Suitability * 0.10) + (Service Completion * 0.10)
-    """
-    # Normalize distance to location suitability (closer = better)
-    # Assuming max practical distance is 50km
-    location_suitability = max(0, (50 - contact.get('distance', 50)) / 50)
-    
-    score = (
-        contact.get('review_score', 0) / 5 * 0.30 +  # Normalize to 0-1
-        contact.get('response_rate', 0) * 0.20 +
-        contact.get('website_presence', 0) * 0.15 +
-        contact.get('customer_interaction', 0) * 0.15 +
-        location_suitability * 0.10 +
-        contact.get('service_completion', 0) * 0.10
-    )
-    
-    return round(score, 3)
+"""
+Smart Recommendation Engine  v2
+=================================
+Ranks contacts by relevance to a search query using:
+  - Service/designation match
+  - Company domain match
+  - Name match
+  - Services field match
+  - Weighted scoring
+"""
+
+import re
 
 
-def recommend_best_contact(contacts, service_type):
+# ── Keyword expansion ─────────────────────────────────────────────────────────
+# Maps common search terms to related keywords
+KEYWORD_MAP = {
+    # Trades
+    'plumber':      ['plumber', 'plumbing', 'pipe', 'water'],
+    'electrician':  ['electrician', 'electrical', 'wiring', 'electric'],
+    'carpenter':    ['carpenter', 'carpentry', 'furniture', 'wood'],
+    'painter':      ['painter', 'painting', 'interior'],
+    'mechanic':     ['mechanic', 'automobile', 'car', 'vehicle', 'auto'],
+    'ac':           ['ac', 'air condition', 'hvac', 'cooling', 'refrigeration'],
+    # Professional
+    'doctor':       ['doctor', 'physician', 'medical', 'clinic', 'hospital', 'health'],
+    'lawyer':       ['lawyer', 'advocate', 'legal', 'attorney', 'law'],
+    'ca':           ['ca', 'chartered accountant', 'accountant', 'audit', 'tax', 'finance'],
+    'architect':    ['architect', 'architecture', 'design', 'construction'],
+    'engineer':     ['engineer', 'engineering', 'technical'],
+    'consultant':   ['consultant', 'consulting', 'advisory', 'advisor'],
+    # Business
+    'marketing':    ['marketing', 'digital marketing', 'seo', 'advertising', 'brand'],
+    'it':           ['it', 'software', 'developer', 'technology', 'tech', 'computer'],
+    'sales':        ['sales', 'business development', 'bd', 'representative'],
+    'hr':           ['hr', 'human resource', 'recruitment', 'hiring'],
+    'logistics':    ['logistics', 'transport', 'delivery', 'supply chain', 'courier'],
+    'real estate':  ['real estate', 'property', 'builder', 'developer', 'construction'],
+    'insurance':    ['insurance', 'policy', 'claim', 'coverage'],
+    'banking':      ['banking', 'bank', 'finance', 'loan', 'investment'],
+    # Energy
+    'solar':        ['solar', 'renewable', 'energy', 'power', 'electrolyser'],
+    'electrical':   ['electrical', 'power', 'energy', 'systems'],
+}
+
+
+def _expand_query(query: str) -> list:
+    """Expand query with related keywords."""
+    q = query.lower().strip()
+    keywords = [q]
+    for key, expansions in KEYWORD_MAP.items():
+        if q in key or key in q or any(q in e or e in q for e in expansions):
+            keywords.extend(expansions)
+    return list(set(keywords))
+
+
+def _score_contact(contact: dict, keywords: list, query: str) -> float:
     """
-    Recommend the best contact for a given service type
+    Score a contact against the search query.
+    Returns 0.0 - 1.0
     """
-    if not contacts:
-        return {"error": "No contacts found", "recommended_contact": None}
-    
-    # Filter contacts by profession/service type
-    relevant_contacts = [
-        contact for contact in contacts 
-        if service_type.lower() in contact.get('profession', '').lower()
-    ]
-    
-    if not relevant_contacts:
-        return {
-            "error": f"No contacts found for service: {service_type}",
-            "recommended_contact": None,
-            "suggestion": "Try scanning more visiting cards or search for a different service"
-        }
-    
-    # Calculate scores for all relevant contacts
-    scored_contacts = []
-    for contact in relevant_contacts:
-        score = calculate_contact_score(contact)
-        contact_with_score = contact.copy()
-        contact_with_score['calculated_score'] = score
-        scored_contacts.append(contact_with_score)
-    
-    # Sort by score (highest first)
-    scored_contacts.sort(key=lambda x: x['calculated_score'], reverse=True)
-    
-    best_contact = scored_contacts[0]
-    
-    return {
-        "service_requested": service_type,
-        "recommended_contact": best_contact,
-        "alternatives": scored_contacts[1:3] if len(scored_contacts) > 1 else [],
-        "total_matches": len(scored_contacts)
+    score = 0.0
+    q = query.lower()
+
+    # Fields to search in, with weights
+    fields = {
+        'designation': 0.35,
+        'services':    0.30,
+        'company':     0.15,
+        'name':        0.10,
+        'address':     0.05,
+        'email':       0.05,
     }
 
+    for field, weight in fields.items():
+        val = (contact.get(field) or '').lower()
+        if not val:
+            continue
+        # Exact query match
+        if q in val:
+            score += weight * 1.0
+        else:
+            # Keyword match
+            for kw in keywords:
+                if kw in val:
+                    score += weight * 0.6
+                    break
 
-# Test the recommendation system
-if __name__ == "__main__":
-    test_contacts = [
-        {
-            "name": "Ravi Plumber",
-            "profession": "plumber",
-            "review_score": 4.5,
-            "response_rate": 0.9,
-            "website_presence": 1,
-            "customer_interaction": 0.8,
-            "distance": 5,
-            "service_completion": 0.85
-        },
-        {
-            "name": "Amit Plumber",
-            "profession": "plumber",
-            "review_score": 4.0,
-            "response_rate": 0.7,
-            "website_presence": 0,
-            "customer_interaction": 0.6,
-            "distance": 2,
-            "service_completion": 0.75
+    # Bonus: has website (more established)
+    if contact.get('website'):
+        score += 0.03
+
+    # Bonus: has email (contactable)
+    if contact.get('email'):
+        score += 0.02
+
+    return round(min(score, 1.0), 3)
+
+
+def recommend_best_contact(contacts: list, service_type: str) -> dict:
+    """
+    Find and rank contacts matching the service type.
+    Returns top matches with scores.
+    """
+    if not contacts:
+        return {
+            "error": "No contacts in database",
+            "suggestion": "Scan some visiting cards first",
+            "results": [],
+            "total_matches": 0,
         }
-    ]
 
-    result = recommend_best_contact(test_contacts, "plumber")
-    print("Recommended Contact:")
-    print(result)
+    keywords = _expand_query(service_type)
+    scored = []
+
+    for c in contacts:
+        score = _score_contact(c, keywords, service_type)
+        if score > 0:
+            c_copy = dict(c)
+            c_copy['match_score'] = score
+            c_copy['calculated_score'] = score  # backward compat
+            scored.append(c_copy)
+
+    scored.sort(key=lambda x: x['match_score'], reverse=True)
+
+    if not scored:
+        return {
+            "error": f"No contacts found for: {service_type}",
+            "suggestion": "Try different keywords or scan more cards",
+            "results": [],
+            "total_matches": 0,
+            "service_requested": service_type,
+        }
+
+    return {
+        "service_requested": service_type,
+        "recommended_contact": scored[0],
+        "alternatives": scored[1:5],
+        "results": scored[:10],
+        "total_matches": len(scored),
+    }

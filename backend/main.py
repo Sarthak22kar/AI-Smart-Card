@@ -407,19 +407,74 @@ def update_contact(contact_id: int, data: dict):
 def get_recommendation(service: str):
     contacts = database.get_all_contacts()
     if not contacts:
-        return {"error": "No contacts in database",
-                "suggestion": "Scan some visiting cards first"}
+        return {
+            "error":      "No contacts in database",
+            "suggestion": "Scan some visiting cards first",
+        }
     formatted = []
     for c in contacts:
         formatted.append({
             "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
             "profession": c[4] or "General",
-            "company": c[5], "location": c[6],
+            "designation": c[4], "company": c[5], "location": c[6],
+            "address": c[6], "website": c[7], "gstin": c[8],
+            "services": c[9] if len(c) > 9 else '',
             "review_score": 4.0, "response_rate": 0.8,
             "website_presence": 1 if c[7] else 0,
             "customer_interaction": 0.7, "distance": 10, "service_completion": 0.8,
         })
     return recommend_best_contact(formatted, service)
+
+
+@app.get("/smart-search/")
+def smart_search(q: str = "", limit: int = 10):
+    """
+    Smart search across all contacts — used for autocomplete and suggestions.
+    Searches name, company, designation, services, phone, email.
+    """
+    if not q or not q.strip():
+        # Return recent contacts when no query
+        rows = database.get_all_contacts()
+        results = []
+        for c in rows[:limit]:
+            results.append({
+                "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
+                "designation": c[4], "company": c[5], "address": c[6],
+                "website": c[7], "gstin": c[8],
+                "services": c[9] if len(c) > 9 else '',
+                "match_score": 1.0,
+            })
+        return {"results": results, "total": len(results), "query": q}
+
+    # Search in database
+    rows = database.search_contacts_advanced(q)
+    results = []
+    for c in rows[:limit]:
+        results.append({
+            "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
+            "designation": c[4], "company": c[5], "address": c[6],
+            "website": c[7], "gstin": c[8],
+            "services": c[9] if len(c) > 9 else '',
+        })
+
+    # Also run recommendation engine for ranked results
+    from recommendation import recommend_best_contact
+    formatted = [{
+        "id": r["id"], "name": r["name"], "phone": r["phone"],
+        "email": r["email"], "designation": r["designation"],
+        "company": r["company"], "address": r["address"],
+        "website": r["website"], "services": r["services"],
+        "profession": r["designation"],
+    } for r in results]
+
+    rec = recommend_best_contact(formatted, q) if formatted else {}
+    ranked = rec.get("results", results)
+
+    return {
+        "results": ranked[:limit],
+        "total": len(ranked),
+        "query": q,
+    }
 
 
 @app.get("/search/")
