@@ -11,6 +11,9 @@ interface Contact {
   website: string;
   services: string;
   match_score?: number;
+  stars?: number;
+  distance_km?: number | null;
+  extraction_confidence?: number;
 }
 
 interface ChatMessage {
@@ -25,6 +28,21 @@ const QUICK_SUGGESTIONS = [
   "Engineer", "Solar", "IT", "Marketing", "Architect",
   "Mechanic", "Logistics", "Real Estate", "Insurance", "Consultant",
 ];
+
+// ── Star rating display ───────────────────────────────────────────────────────
+function Stars({ value }: { value: number }) {
+  const full  = Math.floor(value);
+  const half  = value - full >= 0.5;
+  const empty = 5 - full - (half ? 1 : 0);
+  return (
+    <span style={{ fontSize: "12px", color: "#fd7e14" }}>
+      {"★".repeat(full)}
+      {half ? "½" : ""}
+      {"☆".repeat(empty)}
+      <span style={{ color: "#888", marginLeft: "3px" }}>{value.toFixed(1)}</span>
+    </span>
+  );
+}
 
 // ── Result Card ───────────────────────────────────────────────────────────────
 function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
@@ -91,6 +109,17 @@ function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
           {contact.designation && <div style={{ fontSize: "12px", color: "#555" }}>💼 {contact.designation}</div>}
           {contact.company    && <div style={{ fontSize: "12px", color: "#555" }}>🏢 {contact.company}</div>}
           {contact.services   && <div style={{ fontSize: "12px", color: "#007bff" }}>🛠️ {contact.services}</div>}
+          {/* Stars + distance */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "3px", flexWrap: "wrap" }}>
+            {contact.stars !== undefined && contact.stars > 0 && (
+              <Stars value={contact.stars} />
+            )}
+            {contact.distance_km !== undefined && contact.distance_km !== null && (
+              <span style={{ fontSize: "11px", color: "#28a745", fontWeight: 600 }}>
+                📍 {contact.distance_km} km away
+              </span>
+            )}
+          </div>
           {contact.address    && (
             <div style={{ fontSize: "11px", color: "#888", cursor: "pointer" }} onClick={map}>
               📍 {contact.address.split(",").slice(-2).join(",").trim()} ↗
@@ -133,6 +162,15 @@ function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
             fontSize: "13px", fontWeight: 600,
           }}>🌐 Web</button>
         )}
+        <button onClick={() => {
+          const q = `${contact.name} ${contact.company || contact.designation || ""} ${contact.address?.split(",").slice(-1)[0] || ""}`.trim();
+          window.open(`https://www.google.com/search?q=${encodeURIComponent(q)}`, "_blank");
+        }} style={{
+          flex: 1, minWidth: "70px", padding: "7px 0",
+          backgroundColor: "#4285f4", color: "white",
+          border: "none", borderRadius: "8px", cursor: "pointer",
+          fontSize: "13px", fontWeight: 600,
+        }}>🔍 Google</button>
       </div>
     </div>
   );
