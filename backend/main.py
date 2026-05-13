@@ -23,6 +23,7 @@ import time
 import json
 import base64
 import re
+import math
 
 try:
     import pillow_heif
@@ -59,6 +60,124 @@ _pool = ThreadPoolExecutor(max_workers=4)
 
 _FIELDS = ('name', 'phone', 'email', 'designation',
            'company', 'address', 'website', 'gstin')
+
+
+# ── Distance utility ──────────────────────────────────────────────────────────
+# City coordinates (lat, lng) for Indian cities
+_CITY_COORDS = {
+    # Maharashtra
+    "pune":          (18.5204, 73.8567),
+    "pimpri":        (18.6298, 73.7997),
+    "chinchwad":     (18.6279, 73.8009),
+    "bavdhan":       (18.5089, 73.7838),
+    "hinjewadi":     (18.5912, 73.7389),
+    "wakad":         (18.5975, 73.7598),
+    "baner":         (18.5590, 73.7868),
+    "kothrud":       (18.5074, 73.8077),
+    "hadapsar":      (18.5018, 73.9260),
+    "viman nagar":   (18.5679, 73.9143),
+    "koregaon":      (18.5362, 73.8938),
+    "paud road":     (18.5089, 73.7838),
+    "aundh":         (18.5590, 73.8077),
+    "shivajinagar":  (18.5308, 73.8474),
+    "deccan":        (18.5167, 73.8407),
+    "katraj":        (18.4529, 73.8654),
+    "kondhwa":       (18.4648, 73.8952),
+    "wanowrie":      (18.4893, 73.9001),
+    "magarpatta":    (18.5089, 73.9260),
+    "kharadi":       (18.5512, 73.9442),
+    "wagholi":       (18.5793, 73.9800),
+    "mumbai":        (19.0760, 72.8777),
+    "thane":         (19.2183, 72.9781),
+    "navi mumbai":   (19.0330, 73.0297),
+    "kalyan":        (19.2437, 73.1355),
+    "nashik":        (19.9975, 73.7898),
+    "aurangabad":    (19.8762, 75.3433),
+    "solapur":       (17.6805, 75.9064),
+    "kolhapur":      (16.7050, 74.2433),
+    "nagpur":        (21.1458, 79.0882),
+    "amravati":      (20.9374, 77.7796),
+    "nanded":        (19.1383, 77.3210),
+    # Delhi NCR
+    "delhi":         (28.6139, 77.2090),
+    "new delhi":     (28.6139, 77.2090),
+    "gurugram":      (28.4595, 77.0266),
+    "gurgaon":       (28.4595, 77.0266),
+    "noida":         (28.5355, 77.3910),
+    "faridabad":     (28.4089, 77.3178),
+    "ghaziabad":     (28.6692, 77.4538),
+    # Karnataka
+    "bangalore":     (12.9716, 77.5946),
+    "bengaluru":     (12.9716, 77.5946),
+    "mysore":        (12.2958, 76.6394),
+    "hubli":         (15.3647, 75.1240),
+    "dharwad":       (15.4589, 75.0078),
+    # Telangana / AP
+    "hyderabad":     (17.3850, 78.4867),
+    "secunderabad":  (17.4399, 78.4983),
+    "visakhapatnam": (17.6868, 83.2185),
+    # Tamil Nadu
+    "chennai":       (13.0827, 80.2707),
+    "coimbatore":    (11.0168, 76.9558),
+    "madurai":       (9.9252, 78.1198),
+    # West Bengal
+    "kolkata":       (22.5726, 88.3639),
+    # Gujarat
+    "ahmedabad":     (23.0225, 72.5714),
+    "surat":         (21.1702, 72.8311),
+    "vadodara":      (22.3072, 73.1812),
+    "rajkot":        (22.3039, 70.8022),
+    # Rajasthan
+    "jaipur":        (26.9124, 75.7873),
+    "jodhpur":       (26.2389, 73.0243),
+    # Madhya Pradesh
+    "bhopal":        (23.2599, 77.4126),
+    "indore":        (22.7196, 75.8577),
+    # Uttar Pradesh
+    "lucknow":       (26.8467, 80.9462),
+    "kanpur":        (26.4499, 80.3319),
+    "agra":          (27.1767, 78.0081),
+    "varanasi":      (25.3176, 82.9739),
+    # Punjab / Haryana
+    "chandigarh":    (30.7333, 76.7794),
+    "ludhiana":      (30.9010, 75.8573),
+    "amritsar":      (31.6340, 74.8723),
+    # J&K
+    "jammu":         (32.7266, 74.8570),
+    "srinagar":      (34.0837, 74.7973),
+    # Other
+    "bhubaneswar":   (20.2961, 85.8245),
+    "patna":         (25.5941, 85.1376),
+    "raipur":        (21.2514, 81.6296),
+    "guwahati":      (26.1445, 91.7362),
+    "kochi":         (9.9312, 76.2673),
+    "thiruvananthapuram": (8.5241, 76.9366),
+}
+
+def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Return distance in km between two GPS coordinates."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
+    return round(R * 2 * math.asin(math.sqrt(a)), 1)
+
+def _calc_distance(address: str, user_lat: float, user_lng: float) -> float | None:
+    """
+    Extract city from address string and compute real Haversine distance
+    from user's GPS location. Returns km or None if city not found.
+    """
+    if not address or user_lat is None or user_lng is None:
+        return None
+    addr_lower = address.lower()
+    best_dist = None
+    # Try longest city name first to avoid "pune" matching "navi mumbai" etc.
+    for city in sorted(_CITY_COORDS.keys(), key=len, reverse=True):
+        if city in addr_lower:
+            city_lat, city_lng = _CITY_COORDS[city]
+            best_dist = _haversine(user_lat, user_lng, city_lat, city_lng)
+            break
+    return best_dist
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -429,26 +548,34 @@ def get_recommendation(service: str):
 @app.get("/smart-search/")
 def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = None):
     """
-    Smart fuzzy search with distance calculation and star ratings.
+    Smart fuzzy search with real GPS distance calculation and star ratings.
     """
     all_rows = database.get_all_contacts()
 
     def row_to_contact(c):
         conf = float(c[10]) if len(c) > 10 and c[10] else 0.0
-        stars = round(conf * 5, 1)  # 0-5 stars based on confidence
+        address = c[6] or ""
+        dist = _calc_distance(address, lat, lng)
         return {
             "id": c[0], "name": c[1], "phone": c[2], "email": c[3],
-            "designation": c[4], "company": c[5], "address": c[6],
+            "designation": c[4], "company": c[5], "address": address,
             "website": c[7], "gstin": c[8],
             "services": c[9] if len(c) > 9 else '',
             "extraction_confidence": conf,
-            "stars": stars,
+            "stars": round(conf * 5, 1),
+            "distance_km": dist,
             "match_score": 1.0,
         }
 
     if not q or not q.strip():
-        results = [row_to_contact(c) for c in all_rows[:limit]]
-        return {"results": results, "total": len(results), "query": q}
+        results = [row_to_contact(c) for c in all_rows]
+        # Sort by distance if GPS provided, else by confidence
+        if lat and lng:
+            results.sort(key=lambda x: (
+                x["distance_km"] if x["distance_km"] is not None else 99999,
+                -x["extraction_confidence"]
+            ))
+        return {"results": results[:limit], "total": len(results), "query": q}
 
     # Score all contacts
     all_contacts = [row_to_contact(c) for c in all_rows]
@@ -459,24 +586,12 @@ def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = N
     rec = recommend_best_contact(all_contacts, q)
     ranked = rec.get("results", [])
 
-    # Add distance if GPS provided
+    # If GPS provided, re-sort: nearest first, then by match score
     if lat and lng:
-        import math
-        for r in ranked:
-            addr = (r.get("address") or "").lower()
-            # Estimate distance based on city keywords
-            # In production, use geocoding API
-            dist = None
-            city_distances = {
-                "pune": 0, "pimpri": 3, "chinchwad": 5, "bavdhan": 8,
-                "hinjewadi": 12, "wakad": 10, "baner": 7, "kothrud": 6,
-                "mumbai": 150, "delhi": 1400, "bangalore": 840,
-            }
-            for city, km in city_distances.items():
-                if city in addr:
-                    dist = km
-                    break
-            r["distance_km"] = dist
+        ranked.sort(key=lambda x: (
+            x["distance_km"] if x["distance_km"] is not None else 99999,
+            -x.get("match_score", 0)
+        ))
 
     return {
         "results": ranked[:limit],
@@ -488,25 +603,16 @@ def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = N
 @app.post("/chatbot/")
 async def chatbot(request: dict):
     """
-    AI Chatbot — full contact details, sorted by distance then relevance.
+    AI Chatbot — full contact details, sorted by real GPS distance then relevance.
+    Accepts optional lat/lng for accurate distance calculation.
     """
     message  = (request.get("message") or "").strip()
+    user_lat = request.get("lat")
+    user_lng = request.get("lng")
     if not message:
         return {"reply": "Please ask me something!", "contacts": []}
 
     all_rows = database.get_all_contacts()
-
-    city_distances = {
-        "pune": 0, "pimpri": 3, "chinchwad": 5, "bavdhan": 8,
-        "hinjewadi": 12, "wakad": 10, "baner": 7, "kothrud": 6,
-        "hadapsar": 9, "viman nagar": 11, "koregaon": 8,
-        "mumbai": 150, "thane": 160, "navi mumbai": 155,
-        "delhi": 1400, "bangalore": 840, "hyderabad": 560,
-        "chennai": 1150, "kolkata": 1900, "ahmedabad": 530,
-        "surat": 290, "nagpur": 230, "nashik": 210,
-        "aurangabad": 240, "solapur": 250, "kolhapur": 230,
-        "gurugram": 1410, "noida": 1420, "faridabad": 1415,
-    }
 
     contacts_text = ""
     contact_list  = []
@@ -522,11 +628,11 @@ async def chatbot(request: dict):
         services = c[9] if len(c) > 9 else ""
         conf     = float(c[10]) if len(c) > 10 and c[10] else 0.0
 
-        dist = None
-        for city, km in city_distances.items():
-            if city in address.lower():
-                dist = km
-                break
+        # Real Haversine distance if GPS provided, else city-based fallback
+        if user_lat is not None and user_lng is not None:
+            dist = _calc_distance(address, float(user_lat), float(user_lng))
+        else:
+            dist = _calc_distance(address, None, None)
 
         if name:
             contacts_text += f"- {name} | {desig} | {company} | {services} | {phone} | {address[:40]}\n"

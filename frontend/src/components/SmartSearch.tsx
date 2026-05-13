@@ -114,10 +114,12 @@ function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
             {contact.stars !== undefined && contact.stars > 0 && (
               <Stars value={contact.stars} />
             )}
-            {contact.distance_km !== undefined && contact.distance_km !== null && (
+            {contact.distance_km !== undefined && contact.distance_km !== null ? (
               <span style={{ fontSize: "11px", color: "#28a745", fontWeight: 600 }}>
-                📍 {contact.distance_km} km away
+                📍 {contact.distance_km < 1 ? `${Math.round(contact.distance_km * 1000)} m` : `${contact.distance_km} km`} away
               </span>
+            ) : (
+              <span style={{ fontSize: "11px", color: "#aaa" }}>📍 Enable location for distance</span>
             )}
           </div>
           {contact.address    && (
@@ -177,7 +179,7 @@ function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
 }
 
 // ── Chatbot ───────────────────────────────────────────────────────────────────
-function Chatbot({ onSearch }: { onSearch: (q: string) => void }) {
+function Chatbot({ onSearch, gps }: { onSearch: (q: string) => void; gps: { lat: number; lng: number } | null }) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "bot",
@@ -207,10 +209,13 @@ function Chatbot({ onSearch }: { onSearch: (q: string) => void }) {
     setLoading(true);
 
     try {
+      const body: Record<string, unknown> = { message: text };
+      if (gps) { body.lat = gps.lat; body.lng = gps.lng; }
+
       const res  = await fetch("http://127.0.0.1:8000/chatbot/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       const botMsg: ChatMessage = {
@@ -337,9 +342,13 @@ function Chatbot({ onSearch }: { onSearch: (q: string) => void }) {
                       </div>
                     )}
                     {/* Distance */}
-                    {c.distance_km !== undefined && c.distance_km !== null && (
+                    {c.distance_km !== undefined && c.distance_km !== null ? (
                       <div style={{ color: "#28a745", fontWeight: 600, fontSize: "11px", marginBottom: "4px" }}>
-                        📍 {c.distance_km} km away
+                        📍 {c.distance_km < 1 ? `${Math.round(c.distance_km * 1000)} m` : `${c.distance_km} km`} away
+                      </div>
+                    ) : (
+                      <div style={{ color: "#aaa", fontSize: "11px", marginBottom: "4px" }}>
+                        📍 Enable location for distance
                       </div>
                     )}
                     {/* Address */}
@@ -447,6 +456,9 @@ export default function SmartSearch() {
   const recognRef   = useRef<SpeechRecognition | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ambientRef  = useRef<SpeechRecognition | null>(null);
+
+  // Auto-request GPS on mount
+  useEffect(() => { getLocation(); }, []);
 
   // Get GPS location
   const getLocation = () => {
@@ -729,7 +741,7 @@ export default function SmartSearch() {
       )}
 
       {/* ── CHAT MODE ── */}
-      {mode === "chat" && <Chatbot onSearch={q => { setMode("search"); setQuery(q); doSearch(q); }} />}
+      {mode === "chat" && <Chatbot onSearch={q => { setMode("search"); setQuery(q); doSearch(q); }} gps={gps} />}
 
       <style>{`
         @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
