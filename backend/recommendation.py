@@ -47,6 +47,17 @@ KEYWORD_MAP = {
     # Healthcare
     'dentist':          ['dentist', 'dental', 'teeth', 'oral'],
     'physiotherapist':  ['physiotherapy', 'physio', 'rehabilitation'],
+    'eye surgeon':      ['eye', 'surgeon', 'ophth', 'ophthalm', 'ophthalmologist', 'eye surgeon',
+                         'eye doctor', 'eye clinic', 'vision', 'eyenation', 'optometrist', 'retina',
+                         'cataract', 'glaucoma', 'lasik', 'spectacles', 'lens', 'eye care'],
+    'doctor':           ['doctor', 'physician', 'medical', 'clinic', 'hospital', 'health', 'medicine',
+                         'surgeon', 'specialist', 'consultant physician', 'mbbs', 'md', 'ms', 'dr'],
+    'cardiologist':     ['cardiologist', 'cardiology', 'heart', 'cardiac'],
+    'dermatologist':    ['dermatologist', 'dermatology', 'skin', 'skin care'],
+    'orthopedic':       ['orthopedic', 'ortho', 'bone', 'joint', 'spine'],
+    'neurologist':      ['neurologist', 'neurology', 'brain', 'nerve'],
+    'pediatrician':     ['pediatrician', 'pediatrics', 'child', 'children'],
+    'gynecologist':     ['gynecologist', 'gynecology', 'women', 'obstetrics'],
     # Other
     'security':         ['security', 'guard', 'cctv', 'surveillance'],
     'cleaning':         ['cleaning', 'housekeeping', 'pest control', 'sanitization'],
@@ -79,16 +90,28 @@ def _score_contact(contact: dict, keywords: list, query: str) -> float:
     """
     score = 0.0
     q = query.lower().strip()
-    q_words = q.split()  # individual words from query
+    q_words = [w for w in q.split() if len(w) >= 2]
+
+    # Short keywords that must match as whole words (not substrings)
+    # e.g. "ms" should NOT match "ecosistems"
+    WHOLE_WORD_ONLY = {'ms', 'md', 'dr', 'ca', 'hr', 'ac', 'it', 'ceo', 'cto', 'cfo'}
+
+    def _kw_matches(kw: str, text: str) -> bool:
+        """Check if keyword matches text, using word-boundary for short/ambiguous terms."""
+        if kw in WHOLE_WORD_ONLY or len(kw) <= 2:
+            # Must be a whole word — surrounded by non-alphanumeric chars
+            return bool(re.search(r'(?<![a-z0-9])' + re.escape(kw) + r'(?![a-z0-9])', text))
+        return kw in text
 
     # Fields to search in, with weights
+    # designation and services are the most important — they describe what the person does
     fields = {
-        'designation': 0.35,
+        'designation': 0.40,
         'services':    0.30,
         'company':     0.15,
         'name':        0.10,
-        'address':     0.05,
-        'email':       0.05,
+        'address':     0.03,
+        'email':       0.02,
     }
 
     for field, weight in fields.items():
@@ -104,8 +127,8 @@ def _score_contact(contact: dict, keywords: list, query: str) -> float:
         # Any single word from query matches (partial match)
         word_match = False
         for word in q_words:
-            if len(word) >= 2 and word in val:
-                score += weight * 0.7
+            if _kw_matches(word, val):
+                score += weight * 0.8
                 word_match = True
                 break
 
@@ -114,8 +137,8 @@ def _score_contact(contact: dict, keywords: list, query: str) -> float:
 
         # Keyword expansion match
         for kw in keywords:
-            if len(kw) >= 2 and kw in val:
-                score += weight * 0.5
+            if len(kw) >= 2 and _kw_matches(kw, val):
+                score += weight * 0.6
                 break
 
         # Partial word match (e.g. "elec" matches "electrician")

@@ -676,30 +676,42 @@ async def chatbot(request: dict):
                             break
 
     # ── Step 3: Combined score — relevance + proximity ────────────────────────
-    # Normalize distance: 0 km = 1.0, 2000 km = 0.0
+    # IMPORTANT: contacts with zero relevance score are excluded entirely.
+    # Proximity only acts as a tiebreaker between relevant contacts.
+    MIN_RELEVANCE = 0.05  # must have at least some keyword match to appear
     MAX_DIST = 2000.0
+
+    scored = []
     for c in relevant:
-        rel_score  = c.get("match_score", 0.0)
-        dist       = c.get("distance_km")
+        rel_score = c.get("match_score", 0.0)
+
+        # Hard gate — skip contacts with no relevance to the query
+        if rel_score < MIN_RELEVANCE:
+            continue
+
+        dist = c.get("distance_km")
         if dist is not None:
             prox_score = max(0.0, 1.0 - dist / MAX_DIST)
         else:
             prox_score = 0.3  # unknown location gets neutral score
 
-        # If GPS provided, weight proximity more; else pure relevance
+        # If GPS provided, weight proximity; else pure relevance
         if user_lat is not None and user_lng is not None:
             c["_combined"] = rel_score * 0.55 + prox_score * 0.45
         else:
             c["_combined"] = rel_score
 
-    relevant.sort(key=lambda x: -x["_combined"])
+        scored.append(c)
 
-    # If no relevant contacts found, fall back to nearest contacts overall
-    if not relevant:
-        relevant = sorted(contact_list,
-                          key=lambda x: x["distance_km"] if x["distance_km"] is not None else 99999)
+    scored.sort(key=lambda x: -x["_combined"])
 
-    top10 = relevant[:10]
+    # If no relevant contacts found at all, fall back to nearest contacts overall
+    # (but still show something rather than empty)
+    if not scored:
+        scored = sorted(contact_list,
+                        key=lambda x: x["distance_km"] if x["distance_km"] is not None else 99999)
+
+    top10 = scored[:10]
 
     # ── Step 4: Ask Gemini to pick best 3 and write reply ────────────────────
     if GEMINI_API_KEY:
