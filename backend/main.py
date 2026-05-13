@@ -586,6 +586,10 @@ def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = N
     rec = recommend_best_contact(all_contacts, q)
     ranked = rec.get("results", [])
 
+    # Strict filter — only show contacts with meaningful relevance score
+    SEARCH_MIN_RELEVANCE = 0.15
+    ranked = [r for r in ranked if r.get("match_score", 0) >= SEARCH_MIN_RELEVANCE]
+
     # If GPS provided, re-sort: nearest first, then by match score
     if lat and lng:
         ranked.sort(key=lambda x: (
@@ -676,9 +680,9 @@ async def chatbot(request: dict):
                             break
 
     # ── Step 3: Combined score — relevance + proximity ────────────────────────
-    # IMPORTANT: contacts with zero relevance score are excluded entirely.
+    # STRICT FILTERING: only show contacts that actually match the query.
     # Proximity only acts as a tiebreaker between relevant contacts.
-    MIN_RELEVANCE = 0.05  # must have at least some keyword match to appear
+    MIN_RELEVANCE = 0.20  # must have strong keyword match to appear (was 0.05)
     MAX_DIST = 2000.0
 
     scored = []
@@ -705,11 +709,13 @@ async def chatbot(request: dict):
 
     scored.sort(key=lambda x: -x["_combined"])
 
-    # If no relevant contacts found at all, fall back to nearest contacts overall
-    # (but still show something rather than empty)
+    # If no relevant contacts found — return empty with honest message
+    # Do NOT fall back to random nearest contacts
     if not scored:
-        scored = sorted(contact_list,
-                        key=lambda x: x["distance_km"] if x["distance_km"] is not None else 99999)
+        return {
+            "reply": f"I couldn't find any contacts matching \"{message}\" in your database. Try scanning more visiting cards or search with different keywords.",
+            "contacts": []
+        }
 
     top10 = scored[:10]
 
