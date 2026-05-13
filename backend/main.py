@@ -603,8 +603,14 @@ def smart_search(q: str = "", limit: int = 10, lat: float = None, lng: float = N
 @app.post("/chatbot/")
 async def chatbot(request: dict):
     """
-    AI Chatbot — full contact details, sorted by real GPS distance then relevance.
-    Accepts optional lat/lng for accurate distance calculation.
+    AI Chatbot — accurate contact matching with real GPS distance sorting.
+    Strategy:
+      1. Use recommendation engine to find relevant contacts (scored by query)
+      2. Apply real Haversine distance from user's GPS
+      3. Combined score = relevance * 0.6 + proximity * 0.4
+      4. Send TOP 10 pre-ranked contacts to Gemini with full details
+      5. Gemini picks best 3 and writes a natural reply
+      6. Return exactly those 3 contacts (no name-matching guesswork)
     """
     message  = (request.get("message") or "").strip()
     user_lat = request.get("lat")
@@ -613,12 +619,15 @@ async def chatbot(request: dict):
         return {"reply": "Please ask me something!", "contacts": []}
 
     all_rows = database.get_all_contacts()
+    if not all_rows:
+        return {"reply": "No contacts in database yet. Scan some visiting cards first!", "contacts": []}
 
-    contacts_text = ""
-    contact_list  = []
-
-    for c in all_rows[:80]:
+    # ── Step 1: Build full contact list with distance ─────────────────────────
+    contact_list = []
+    for c in all_rows:
         name     = c[1] or ""
+        if not name:
+            continue
         phone    = c[2] or ""
         email    = c[3] or ""
         desig    = c[4] or ""
@@ -628,112 +637,173 @@ async def chatbot(request: dict):
         services = c[9] if len(c) > 9 else ""
         conf     = float(c[10]) if len(c) > 10 and c[10] else 0.0
 
-        # Real Haversine distance if GPS provided, else city-based fallback
+        dist = None
         if user_lat is not None and user_lng is not None:
             dist = _calc_distance(address, float(user_lat), float(user_lng))
+
+        contact_list.append({
+            "id": c[0], "name": name, "phone": phone, "email": email,
+            "designation": desig, "company": company, "address": address,
+            "website": website, "services": services,
+            "stars": round(conf * 5, 1),
+            "extraction_confidence": conf,
+            "distance_km": dist,
+        })
+
+    # ── Step 2: Score by relevance using recommendation engine ────────────────
+    from recommendation import recommend_best_contact
+    rec = recommend_best_contact(contact_list, message)
+    relevant = rec.get("results", [])  # sorted by match_score desc
+
+    # Also check if message contains a city name — boost contacts in that city
+    msg_lower = message.lower()
+    city_boost_names = [city for city in _CITY_COORDS if city in msg_lower]
+    if city_boost_names:
+        for c in contact_list:
+            addr_lower = (c.get("address") or "").lower()
+            if any(city in addr_lower for city in city_boost_names):
+                # Add to relevant if not already there, with a city-match score
+                ids_in_relevant = {r["id"] for r in relevant}
+                if c["id"] not in ids_in_relevant:
+                    c_copy = dict(c)
+                    c_copy["match_score"] = 0.5  # city match baseline
+                    relevant.append(c_copy)
+                else:
+                    # Boost existing score
+                    for r in relevant:
+                        if r["id"] == c["id"]:
+                            r["match_score"] = min(1.0, r["match_score"] + 0.3)
+                            break
+
+    # ── Step 3: Combined score — relevance + proximity ────────────────────────
+    # Normalize distance: 0 km = 1.0, 2000 km = 0.0
+    MAX_DIST = 2000.0
+    for c in relevant:
+        rel_score  = c.get("match_score", 0.0)
+        dist       = c.get("distance_km")
+        if dist is not None:
+            prox_score = max(0.0, 1.0 - dist / MAX_DIST)
         else:
-            dist = _calc_distance(address, None, None)
+            prox_score = 0.3  # unknown location gets neutral score
 
-        if name:
-            contacts_text += f"- {name} | {desig} | {company} | {services} | {phone} | {address[:40]}\n"
-            contact_list.append({
-                "id": c[0], "name": name, "phone": phone, "email": email,
-                "designation": desig, "company": company, "address": address,
-                "website": website, "services": services,
-                "stars": round(conf * 5, 1),
-                "extraction_confidence": conf,
-                "distance_km": dist,
-            })
+        # If GPS provided, weight proximity more; else pure relevance
+        if user_lat is not None and user_lng is not None:
+            c["_combined"] = rel_score * 0.55 + prox_score * 0.45
+        else:
+            c["_combined"] = rel_score
 
-    # Sort: nearest first, then by confidence
-    contact_list.sort(key=lambda x: (
-        x["distance_km"] if x["distance_km"] is not None else 9999,
-        -x["extraction_confidence"]
-    ))
+    relevant.sort(key=lambda x: -x["_combined"])
 
+    # If no relevant contacts found, fall back to nearest contacts overall
+    if not relevant:
+        relevant = sorted(contact_list,
+                          key=lambda x: x["distance_km"] if x["distance_km"] is not None else 99999)
+
+    top10 = relevant[:10]
+
+    # ── Step 4: Ask Gemini to pick best 3 and write reply ────────────────────
     if GEMINI_API_KEY:
         try:
             from gemini_ocr import _call_gemini
-            prompt = f"""You are a helpful assistant for a professional contact network app.
-The user has {len(all_rows)} contacts sorted by distance (nearest first):
 
-{contacts_text[:2000]}
+            # Build numbered list so Gemini can reference by index
+            numbered = ""
+            for i, c in enumerate(top10, 1):
+                dist_str = f"{c['distance_km']} km away" if c.get("distance_km") is not None else "distance unknown"
+                numbered += (
+                    f"{i}. {c['name']} | {c.get('designation','')} | {c.get('company','')} | "
+                    f"Services: {c.get('services','N/A')} | Location: {c.get('address','')[:50]} | {dist_str}\n"
+                )
 
-User question: {message}
+            has_gps = user_lat is not None and user_lng is not None
+            gps_note = "User's GPS location is available — prioritize nearest contacts." if has_gps else "No GPS — prioritize relevance."
 
-Answer in 2-3 sentences. Suggest the nearest AND most relevant contacts.
+            prompt = f"""You are a smart assistant for a professional contact directory app.
+{gps_note}
 
-Format EXACTLY:
-REPLY: <your 2-3 sentence answer>
-CONTACTS: ["Name1", "Name2", "Name3"]"""
+User asked: "{message}"
 
-            raw = _call_gemini([{"text": prompt}], temperature=0.3)
-            reply, suggested_names = "", []
+Here are the top pre-ranked contacts (by relevance + proximity):
+{numbered}
+
+Your job:
+1. Pick the BEST 3 contacts from the list above that ACTUALLY match the user's need.
+2. Match by: profession/service type, city/location mentioned, company type, designation.
+3. If the user mentions a city (e.g. "bangalore", "mumbai"), ONLY pick contacts from that city.
+4. Write a helpful 2-sentence reply explaining why these contacts are good matches.
+5. If truly no contacts match, say so honestly and suggest what to search for.
+
+Respond in EXACTLY this format (nothing else):
+REPLY: <2 sentence helpful answer>
+CONTACTS: [1, 2, 3]
+
+Use the numbers from the list above. Example: CONTACTS: [1, 3, 5]"""
+
+            raw = _call_gemini([{"text": prompt}], temperature=0.2)
+
+            # Handle quota/error responses from Gemini
+            if raw in ('quota', 'forbidden', 'error', '') or len(raw) < 10:
+                raise ValueError(f"Gemini returned non-answer: {raw}")
+
+            reply = ""
+            indices = []
 
             if "REPLY:" in raw:
                 reply = raw.split("REPLY:")[1].split("CONTACTS:")[0].strip()
             if "CONTACTS:" in raw:
-                import re as _re
-                suggested_names = _re.findall(r'"([^"]+)"', raw.split("CONTACTS:")[1])[:3]
+                idx_str = raw.split("CONTACTS:")[1].strip()
+                indices = [int(x) - 1 for x in re.findall(r'\d+', idx_str) if 1 <= int(x) <= len(top10)][:3]
 
             if not reply:
-                reply = raw[:300]
+                reply = raw[:300].strip()
 
-            # Match Gemini-suggested names against contact_list (fuzzy)
-            def _name_match(contact_name: str, suggested: str) -> bool:
-                cn = (contact_name or "").lower().strip()
-                sn = suggested.lower().strip()
-                # exact or substring match
-                if sn in cn or cn in sn:
-                    return True
-                # first-word match (e.g. "Vikrant" matches "Vikrant Yadav")
-                cn_words = cn.split()
-                sn_words = sn.split()
-                if cn_words and sn_words and cn_words[0] == sn_words[0]:
-                    return True
-                return False
+            # Pick contacts by Gemini's chosen indices
+            suggested = [top10[i] for i in indices if i < len(top10)]
 
-            suggested = [c for c in contact_list
-                         if any(_name_match(c["name"], n) for n in suggested_names)][:3]
-
+            # If Gemini gave bad indices or no contacts, use top3 from combined score
             if not suggested:
-                from recommendation import recommend_best_contact
-                rec = recommend_best_contact(contact_list, message)
-                suggested = rec.get("results", [])[:3]
-                suggested.sort(key=lambda x: (
-                    x.get("distance_km") if x.get("distance_km") is not None else 9999,
-                    -x.get("extraction_confidence", 0)
-                ))
+                suggested = top10[:3]
 
-            # Ensure stars and distance_km are always present
+            # Clean up internal scoring field
             for c in suggested:
-                if "stars" not in c or c["stars"] is None:
-                    conf = c.get("extraction_confidence", 0.0)
-                    c["stars"] = round(float(conf) * 5, 1)
-                if "distance_km" not in c:
-                    c["distance_km"] = None
+                c.pop("_combined", None)
+                c.pop("match_score", None)
+                c.pop("calculated_score", None)
 
             return {"reply": reply, "contacts": suggested}
 
         except Exception as e:
-            print(f"Chatbot error: {e}")
+            print(f"Chatbot Gemini error: {e}")
 
-    from recommendation import recommend_best_contact
-    rec = recommend_best_contact(contact_list, message)
-    top = rec.get("results", [])[:3]
-    top.sort(key=lambda x: (
-        x.get("distance_km") if x.get("distance_km") is not None else 9999,
-        -x.get("extraction_confidence", 0)
-    ))
-    # Ensure stars and distance_km are always present
-    for c in top:
-        if "stars" not in c or c["stars"] is None:
-            conf = c.get("extraction_confidence", 0.0)
-            c["stars"] = round(float(conf) * 5, 1)
-        if "distance_km" not in c:
-            c["distance_km"] = None
-    reply = f"Here are the nearest matching contacts: {', '.join(c['name'] for c in top)}." if top else "No matching contacts found."
-    return {"reply": reply, "contacts": top}
+    # ── Fallback: no Gemini — return top3 with smart reply ──────────────────
+    # If message mentions a specific city, filter to that city first
+    msg_lower = message.lower()
+    city_filtered = []
+    for city in sorted(_CITY_COORDS.keys(), key=len, reverse=True):
+        if city in msg_lower:
+            city_filtered = [c for c in top10 if city in (c.get("address") or "").lower()]
+            if city_filtered:
+                top3 = city_filtered[:3]
+                break
+    else:
+        top3 = top10[:3]
+
+    for c in top3:
+        c.pop("_combined", None)
+        c.pop("match_score", None)
+        c.pop("calculated_score", None)
+
+    if top3:
+        parts = []
+        for c in top3:
+            desc = c.get("designation") or c.get("company") or "professional"
+            dist = c.get("distance_km")
+            loc  = f"{dist} km away" if dist is not None else "in your contacts"
+            parts.append(f"{c['name']} ({desc}, {loc})")
+        reply = f"Here are the best matches for your query: {'; '.join(parts)}."
+    else:
+        reply = "No matching contacts found. Try scanning more visiting cards or use different keywords."
+    return {"reply": reply, "contacts": top3}
 
 @app.get("/search/")
 def search_contacts(query: str = ""):
