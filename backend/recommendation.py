@@ -13,34 +13,51 @@ import re
 
 
 # ── Keyword expansion ─────────────────────────────────────────────────────────
-# Maps common search terms to related keywords
 KEYWORD_MAP = {
     # Trades
-    'plumber':      ['plumber', 'plumbing', 'pipe', 'water'],
-    'electrician':  ['electrician', 'electrical', 'wiring', 'electric'],
-    'carpenter':    ['carpenter', 'carpentry', 'furniture', 'wood'],
-    'painter':      ['painter', 'painting', 'interior'],
-    'mechanic':     ['mechanic', 'automobile', 'car', 'vehicle', 'auto'],
-    'ac':           ['ac', 'air condition', 'hvac', 'cooling', 'refrigeration'],
+    'plumber':          ['plumber', 'plumbing', 'pipe', 'water supply', 'sanitation'],
+    'electrician':      ['electrician', 'electrical', 'wiring', 'electric', 'power'],
+    'carpenter':        ['carpenter', 'carpentry', 'furniture', 'wood', 'woodwork'],
+    'painter':          ['painter', 'painting', 'interior design', 'wall'],
+    'mechanic':         ['mechanic', 'automobile', 'car repair', 'vehicle', 'auto'],
+    'ac repair':        ['ac', 'air conditioning', 'hvac', 'cooling', 'refrigeration'],
+    'welder':           ['welder', 'welding', 'fabrication', 'metal'],
     # Professional
-    'doctor':       ['doctor', 'physician', 'medical', 'clinic', 'hospital', 'health'],
-    'lawyer':       ['lawyer', 'advocate', 'legal', 'attorney', 'law'],
-    'ca':           ['ca', 'chartered accountant', 'accountant', 'audit', 'tax', 'finance'],
-    'architect':    ['architect', 'architecture', 'design', 'construction'],
-    'engineer':     ['engineer', 'engineering', 'technical'],
-    'consultant':   ['consultant', 'consulting', 'advisory', 'advisor'],
+    'doctor':           ['doctor', 'physician', 'medical', 'clinic', 'hospital', 'health', 'medicine'],
+    'lawyer':           ['lawyer', 'advocate', 'legal', 'attorney', 'law', 'court'],
+    'ca':               ['chartered accountant', 'accountant', 'audit', 'tax', 'gst', 'finance', 'ca'],
+    'architect':        ['architect', 'architecture', 'building design', 'construction'],
+    'engineer':         ['engineer', 'engineering', 'technical'],
+    'consultant':       ['consultant', 'consulting', 'advisory', 'advisor'],
+    'professor':        ['professor', 'teacher', 'education', 'training', 'faculty'],
     # Business
-    'marketing':    ['marketing', 'digital marketing', 'seo', 'advertising', 'brand'],
-    'it':           ['it', 'software', 'developer', 'technology', 'tech', 'computer'],
-    'sales':        ['sales', 'business development', 'bd', 'representative'],
-    'hr':           ['hr', 'human resource', 'recruitment', 'hiring'],
-    'logistics':    ['logistics', 'transport', 'delivery', 'supply chain', 'courier'],
-    'real estate':  ['real estate', 'property', 'builder', 'developer', 'construction'],
-    'insurance':    ['insurance', 'policy', 'claim', 'coverage'],
-    'banking':      ['banking', 'bank', 'finance', 'loan', 'investment'],
+    'marketing':        ['marketing', 'digital marketing', 'seo', 'advertising', 'brand', 'promotion'],
+    'software':         ['software', 'developer', 'technology', 'tech', 'computer', 'programming', 'app'],
+    'sales':            ['sales', 'business development', 'representative', 'account manager'],
+    'hr':               ['hr', 'human resource', 'recruitment', 'hiring', 'staffing'],
+    'logistics':        ['logistics', 'transport', 'delivery', 'supply chain', 'courier', 'shipping'],
+    'real estate':      ['real estate', 'property', 'builder', 'developer', 'construction', 'flat', 'plot'],
+    'insurance':        ['insurance', 'policy', 'claim', 'coverage', 'life insurance'],
+    'banking':          ['banking', 'bank', 'finance', 'loan', 'investment', 'mutual fund'],
     # Energy
-    'solar':        ['solar', 'renewable', 'energy', 'power', 'electrolyser'],
-    'electrical':   ['electrical', 'power', 'energy', 'systems'],
+    'solar':            ['solar', 'renewable energy', 'solar panel', 'electrolyser', 'fuel cell'],
+    # Events
+    'event management': ['event', 'wedding', 'party', 'catering', 'decoration', 'venue'],
+    'photographer':     ['photographer', 'photography', 'photo', 'videographer', 'video'],
+    # Healthcare
+    'dentist':          ['dentist', 'dental', 'teeth', 'oral'],
+    'physiotherapist':  ['physiotherapy', 'physio', 'rehabilitation'],
+    # Other
+    'security':         ['security', 'guard', 'cctv', 'surveillance'],
+    'cleaning':         ['cleaning', 'housekeeping', 'pest control', 'sanitization'],
+    'tutor':            ['tutor', 'coaching', 'classes', 'teaching'],
+    'travel':           ['travel', 'tour', 'tourism', 'hotel', 'booking'],
+    'printing':         ['printing', 'banner', 'flex', 'stationery'],
+    'interior':         ['interior', 'interior design', 'decor', 'furnishing'],
+    'gym':              ['gym', 'fitness', 'trainer', 'yoga', 'health club'],
+    'restaurant':       ['restaurant', 'food', 'catering', 'hotel', 'chef'],
+    'director':         ['director', 'managing director', 'executive director', 'ceo'],
+    'manager':          ['manager', 'general manager', 'project manager', 'senior manager'],
 }
 
 

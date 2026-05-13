@@ -385,7 +385,7 @@ export default function SmartSearch() {
     );
   };
 
-  const doSearch = useCallback(async (q: string) => {
+  const doSearch = useCallback(async (q: string, source = "manual") => {
     if (!q.trim()) { setResults([]); setSearched(false); return; }
     setLoading(true); setSearched(true);
     try {
@@ -393,8 +393,15 @@ export default function SmartSearch() {
       if (gps) url += `&lat=${gps.lat}&lng=${gps.lng}`;
       const res  = await fetch(url);
       const data = await res.json();
+      const resultCount = data.results?.length || 0;
       setResults(data.results || []);
       setTotal(data.total || 0);
+      // Log search to history
+      fetch("http://127.0.0.1:8000/log-search/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: q, source, results: resultCount }),
+      }).catch(() => {});
     } catch { setResults([]); }
     finally { setLoading(false); }
   }, [gps]);
@@ -437,7 +444,7 @@ export default function SmartSearch() {
           setDetectedWord(kw);
           setAmbientStatus(`🔑 Detected: "${kw}" — searching...`);
           setQuery(kw);
-          doSearch(kw);
+          doSearch(kw, "ambient");
           setMode("search");
         }
       } catch {

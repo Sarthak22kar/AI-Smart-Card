@@ -585,9 +585,50 @@ def search_contacts(query: str = ""):
     return {"contacts": result, "total": len(result)}
 
 
-@app.get("/stats/")
-def get_stats():
-    return {"status": "success", "statistics": database.get_contact_stats()}
+@app.get("/search-history/")
+def get_search_history(limit: int = 20):
+    """Get recent search history."""
+    try:
+        con = database._conn()
+        cur = con.cursor()
+        cur.execute("""
+            SELECT query, source, results, created_at
+            FROM search_history
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,))
+        rows = cur.fetchall()
+        cur.close(); con.close()
+        return {
+            "history": [
+                {"query": r[0], "source": r[1], "results": r[2], "time": str(r[3])}
+                for r in rows
+            ]
+        }
+    except Exception:
+        return {"history": []}
+
+
+@app.post("/log-search/")
+def log_search(request: dict):
+    """Log a search query to history."""
+    query   = (request.get("query") or "").strip()
+    source  = (request.get("source") or "manual").strip()
+    results = int(request.get("results") or 0)
+    if not query:
+        return {"status": "skipped"}
+    try:
+        con = database._conn()
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO search_history (query, source, results) VALUES (%s, %s, %s)",
+            (query[:255], source[:50], results)
+        )
+        con.commit()
+        cur.close(); con.close()
+        return {"status": "logged"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @app.post("/extract-keywords/")
@@ -595,7 +636,7 @@ def extract_keywords(request: dict):
     """
     Extract service keywords from spoken/typed text.
     Input:  { "text": "my AC is not working I need someone to fix it" }
-    Output: { "keywords": ["ac", "electrician"], "search": "ac" }
+    Output: { "keywords": ["ac repair", "electrician"], "search": "ac repair" }
     """
     text = (request.get("text") or "").lower().strip()
     if not text:
@@ -603,93 +644,104 @@ def extract_keywords(request: dict):
 
     from recommendation import KEYWORD_MAP
 
-    # All known service keywords (flat list)
-    all_keywords = list(KEYWORD_MAP.keys())
-    # Also add common trigger phrases
-    phrase_map = {
-        "fix":        ["repair", "technician", "mechanic"],
-        "repair":     ["technician", "mechanic", "engineer"],
-        "need":       [],
-        "looking for": [],
-        "find me":    [],
-        "broken":     ["repair", "technician"],
-        "not working": ["repair", "technician", "engineer"],
-        "leaking":    ["plumber"],
-        "pipe":       ["plumber"],
-        "wiring":     ["electrician"],
-        "light":      ["electrician"],
-        "power":      ["electrician"],
-        "water":      ["plumber"],
-        "tax":        ["ca"],
-        "gst":        ["ca"],
-        "court":      ["lawyer"],
-        "legal":      ["lawyer"],
-        "property":   ["real estate"],
-        "house":      ["real estate", "architect"],
-        "car":        ["mechanic"],
-        "vehicle":    ["mechanic"],
-        "sick":       ["doctor"],
-        "medicine":   ["doctor"],
-        "hospital":   ["doctor"],
-        "website":    ["it"],
-        "software":   ["it"],
-        "app":        ["it"],
-        "cooling":    ["ac"],
-        "hot":        ["ac"],
-        "cold":       ["ac"],
-        "paint":      ["painter"],
-        "wall":       ["painter", "carpenter"],
-        "furniture":  ["carpenter"],
-        "wood":       ["carpenter"],
-        "loan":       ["banking"],
-        "insurance":  ["insurance"],
-        "invest":     ["banking", "ca"],
-        "transport":  ["logistics"],
-        "delivery":   ["logistics"],
-        "cargo":      ["logistics"],
-        "solar":      ["solar"],
-        "panel":      ["solar"],
-        "energy":     ["solar", "electrician"],
-        "event":      ["event management"],
-        "wedding":    ["event management"],
-        "catering":   ["catering"],
-        "food":       ["catering"],
-        "photo":      ["photographer"],
-        "video":      ["videographer"],
-        "design":     ["architect", "interior designer"],
-        "interior":   ["interior designer"],
-    }
+    # Priority-ordered phrase triggers (longer phrases checked first)
+    phrase_map = [
+        # AC / cooling
+        ("air condition", "ac repair"), ("not cooling", "ac repair"),
+        ("ac not working", "ac repair"), ("ac repair", "ac repair"),
+        ("cooling problem", "ac repair"), ("refrigerator", "ac repair"),
+        ("ac is not", "ac repair"), ("ac problem", "ac repair"),
+        # Plumbing
+        ("pipe leaking", "plumber"), ("water leaking", "plumber"),
+        ("tap leaking", "plumber"), ("drain blocked", "plumber"),
+        ("leaking pipe", "plumber"), ("water supply", "plumber"),
+        ("pipe is", "plumber"), ("leaking in", "plumber"),
+        ("bathroom leak", "plumber"), ("kitchen sink", "plumber"),
+        # Electrical
+        ("power cut", "electrician"), ("no electricity", "electrician"),
+        ("short circuit", "electrician"), ("wiring problem", "electrician"),
+        ("light not working", "electrician"), ("fan not working", "electrician"),
+        ("power not", "electrician"), ("electricity problem", "electrician"),
+        # Legal
+        ("court case", "lawyer"), ("legal advice", "lawyer"),
+        ("property dispute", "lawyer"), ("need advocate", "lawyer"),
+        ("legal matter", "lawyer"), ("file case", "lawyer"),
+        # Finance
+        ("file gst", "ca"), ("income tax", "ca"), ("tax return", "ca"),
+        ("audit", "ca"), ("balance sheet", "ca"), ("gst filing", "ca"),
+        # Medical
+        ("not feeling well", "doctor"), ("fever", "doctor"),
+        ("body pain", "doctor"), ("need medicine", "doctor"),
+        ("health problem", "doctor"), ("feeling sick", "doctor"),
+        # Car
+        ("car not starting", "mechanic"), ("car repair", "mechanic"),
+        ("vehicle breakdown", "mechanic"), ("bike repair", "mechanic"),
+        ("car problem", "mechanic"), ("car service", "mechanic"),
+        # Construction
+        ("build house", "architect"), ("home construction", "architect"),
+        ("renovation", "architect"), ("interior work", "interior"),
+        ("house construction", "architect"), ("building plan", "architect"),
+        ("build a house", "architect"), ("build house", "architect"),
+        # Solar
+        ("solar panel", "solar"), ("solar installation", "solar"),
+        ("renewable energy", "solar"), ("solar energy", "solar"),
+        # IT
+        ("website development", "software"), ("mobile app", "software"),
+        ("software development", "software"), ("computer repair", "software"),
+        ("app development", "software"), ("website design", "software"),
+        # Events
+        ("wedding planning", "event management"), ("event organize", "event management"),
+        ("party planning", "event management"), ("wedding event", "event management"),
+        # Real estate
+        ("buy flat", "real estate"), ("sell property", "real estate"),
+        ("rent house", "real estate"), ("property dealer", "real estate"),
+        ("buy property", "real estate"), ("plot for sale", "real estate"),
+        # Cleaning / pest
+        ("pest control", "cleaning"), ("house cleaning", "cleaning"),
+        ("deep cleaning", "cleaning"), ("sanitization", "cleaning"),
+        # Generic (lowest priority)
+        ("need to fix", "repair"), ("repair needed", "repair"),
+        ("not working", "repair"), ("broken", "repair"),
+    ]
 
-    found_keywords = set()
+    found_keywords = []
+    found_set = set()
 
-    # Check direct keyword matches
-    for kw in all_keywords:
-        if kw in text:
-            found_keywords.add(kw)
+    # Check multi-word phrases first (most specific)
+    for phrase, keyword in phrase_map:
+        if phrase in text and keyword not in found_set:
+            found_keywords.append(keyword)
+            found_set.add(keyword)
 
-    # Check phrase triggers
-    for phrase, related in phrase_map.items():
-        if phrase in text:
-            for r in related:
-                found_keywords.add(r)
+    # Check direct keyword matches from KEYWORD_MAP
+    for kw in KEYWORD_MAP.keys():
+        if kw in text and kw not in found_set:
+            # Skip very short generic words that cause false positives
+            if len(kw) >= 3 and kw not in ('it', 'hr', 'bd'):
+                found_keywords.append(kw)
+                found_set.add(kw)
 
-    # Check individual words against keyword map
-    words = text.split()
+    # Check individual words
+    words = [w.strip(".,!?") for w in text.split()]
     for word in words:
-        word = word.strip(".,!?")
-        if word in all_keywords:
-            found_keywords.add(word)
-        # Partial match (e.g. "electrical" → "electrician")
-        for kw in all_keywords:
-            if len(word) >= 4 and (word in kw or kw in word):
-                found_keywords.add(kw)
+        if len(word) >= 4 and word in KEYWORD_MAP and word not in found_set:
+            found_keywords.append(word)
+            found_set.add(word)
 
-    keywords = list(found_keywords)
-    # Pick the most specific keyword as primary search
-    primary = keywords[0] if keywords else ""
+    # Remove generic "repair" if a specific keyword was found
+    if len(found_keywords) > 1 and "repair" in found_keywords:
+        found_keywords = [k for k in found_keywords if k != "repair"]
+
+    # Primary search = first specific keyword found
+    primary = found_keywords[0] if found_keywords else ""
 
     return {
-        "keywords": keywords,
+        "keywords": found_keywords[:5],
         "search": primary,
         "text": text,
     }
+
+
+@app.get("/stats/")
+def get_stats():
+    return {"status": "success", "statistics": database.get_contact_stats()}
