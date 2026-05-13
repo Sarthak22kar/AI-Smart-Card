@@ -286,22 +286,99 @@ function Chatbot({ onSearch }: { onSearch: (q: string) => void }) {
             }}>
               {msg.text}
             </div>
-            {/* Suggested contacts from bot */}
+            {/* Suggested contacts from bot — full details */}
             {msg.contacts && msg.contacts.length > 0 && (
-              <div style={{ maxWidth: "85%", marginTop: "6px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                {msg.contacts.map(c => (
+              <div style={{ width: "100%", maxWidth: "340px", marginTop: "8px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                {msg.contacts.map((c, idx) => (
                   <div key={c.id} style={{
-                    backgroundColor: "white", border: "1px solid #e0e8ff",
-                    borderRadius: "10px", padding: "8px 12px", fontSize: "12px",
+                    backgroundColor: "white",
+                    border: idx === 0 ? "2px solid #007bff" : "1px solid #e0e8ff",
+                    borderRadius: "12px", padding: "12px", fontSize: "12px",
+                    boxShadow: idx === 0 ? "0 2px 8px rgba(0,123,255,0.15)" : "none",
                   }}>
-                    <div style={{ fontWeight: 700 }}>👤 {c.name}</div>
-                    {c.designation && <div style={{ color: "#555" }}>💼 {c.designation}</div>}
-                    {c.phone && (
-                      <button onClick={() => window.location.href = `tel:${c.phone.split("/")[0].trim().replace(/\s/g,"")}`}
-                        style={{ marginTop: "4px", padding: "4px 10px", backgroundColor: "#28a745", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "11px" }}>
-                        📞 Call
-                      </button>
+                    {/* Rank badge */}
+                    {idx === 0 && (
+                      <div style={{ fontSize: "10px", color: "#007bff", fontWeight: 700, marginBottom: "4px" }}>
+                        🏆 Best Match
+                      </div>
                     )}
+                    {/* Name */}
+                    <div style={{ fontWeight: 700, fontSize: "13px", color: "#1a1a2e", marginBottom: "4px" }}>
+                      👤 {c.name}
+                    </div>
+                    {/* Designation */}
+                    {c.designation && (
+                      <div style={{ color: "#555", marginBottom: "2px" }}>💼 {c.designation}</div>
+                    )}
+                    {/* Company */}
+                    {c.company && (
+                      <div style={{ color: "#555", marginBottom: "2px" }}>🏢 {c.company}</div>
+                    )}
+                    {/* Services */}
+                    {c.services && (
+                      <div style={{ color: "#007bff", marginBottom: "2px" }}>🛠️ {c.services}</div>
+                    )}
+                    {/* Phone */}
+                    {c.phone && (
+                      <div style={{ color: "#28a745", fontWeight: 600, marginBottom: "2px" }}>
+                        📞 {c.phone}
+                      </div>
+                    )}
+                    {/* Email */}
+                    {c.email && (
+                      <div style={{ color: "#555", marginBottom: "2px", wordBreak: "break-all" }}>
+                        📧 {c.email}
+                      </div>
+                    )}
+                    {/* Stars */}
+                    {c.stars !== undefined && c.stars > 0 && (
+                      <div style={{ marginBottom: "2px" }}>
+                        <Stars value={c.stars} />
+                      </div>
+                    )}
+                    {/* Distance */}
+                    {c.distance_km !== undefined && c.distance_km !== null && (
+                      <div style={{ color: "#28a745", fontWeight: 600, fontSize: "11px", marginBottom: "4px" }}>
+                        📍 {c.distance_km} km away
+                      </div>
+                    )}
+                    {/* Address */}
+                    {c.address && (
+                      <div style={{ color: "#888", fontSize: "11px", marginBottom: "6px" }}>
+                        📍 {c.address.split(",").slice(-2).join(",").trim()}
+                      </div>
+                    )}
+                    {/* Action buttons */}
+                    <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
+                      {c.phone && (
+                        <button
+                          onClick={() => window.location.href = `tel:${c.phone.split("/")[0].trim().replace(/[\s\-]/g, "")}`}
+                          style={{ flex: 1, padding: "5px 0", backgroundColor: "#28a745", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: 600 }}>
+                          📞 Call
+                        </button>
+                      )}
+                      {c.email && (
+                        <button
+                          onClick={() => window.location.href = `mailto:${c.email}`}
+                          style={{ flex: 1, padding: "5px 0", backgroundColor: "#007bff", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: 600 }}>
+                          📧 Email
+                        </button>
+                      )}
+                      {c.address && (
+                        <button
+                          onClick={() => window.open(`https://www.google.com/maps/search/${encodeURIComponent(c.address)}`, "_blank")}
+                          style={{ flex: 1, padding: "5px 0", backgroundColor: "#fd7e14", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: 600 }}>
+                          🗺️ Map
+                        </button>
+                      )}
+                      {c.website && (
+                        <button
+                          onClick={() => window.open(c.website.startsWith("http") ? c.website : `https://${c.website}`, "_blank")}
+                          style={{ flex: 1, padding: "5px 0", backgroundColor: "#6c757d", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: 600 }}>
+                          🌐 Web
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
