@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SmartSearch from "./components/SmartSearch";
 import UploadCard from "./components/UploadCard";
 import ContactList from "./components/ContactList";
@@ -7,9 +7,22 @@ import DatabaseStats from "./components/DatabaseStats";
 function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [activeTab, setActiveTab] = useState<"search" | "scan" | "contacts" | "stats">("search");
+  const [contactCount, setContactCount] = useState<number | null>(null);
+
+  // Fetch real contact count from backend
+  const fetchCount = () => {
+    fetch("http://127.0.0.1:8000/stats/")
+      .then(r => r.json())
+      .then(d => setContactCount(d?.statistics?.total_contacts ?? null))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchCount();
+  }, [refreshTrigger]); // re-fetch after every scan too
 
   const handleScanSuccess = () => {
-    setRefreshTrigger(prev => prev + 1);
+    setRefreshTrigger(prev => prev + 1); // triggers fetchCount via useEffect
     setActiveTab("contacts");
   };
 
@@ -43,7 +56,7 @@ function App() {
               🤖 AI Smart Card Network
             </h1>
             <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#888" }}>
-              196 contacts · Powered by Gemini AI
+              {contactCount !== null ? contactCount : "..."} contacts · Powered by Gemini AI
             </p>
           </div>
           {/* Tabs */}
