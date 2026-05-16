@@ -3,13 +3,14 @@ import SmartSearch from "./components/SmartSearch";
 import UploadCard from "./components/UploadCard";
 import ContactList from "./components/ContactList";
 import DatabaseStats from "./components/DatabaseStats";
+import LandingPage from "./components/LandingPage";
 
 function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [activeTab, setActiveTab] = useState<"search" | "scan" | "contacts" | "stats">("search");
   const [contactCount, setContactCount] = useState<number | null>(null);
+  const [showLanding, setShowLanding] = useState(true);
 
-  // Fetch real contact count from backend
   const fetchCount = () => {
     fetch("http://127.0.0.1:8000/stats/")
       .then(r => r.json())
@@ -17,14 +18,22 @@ function App() {
       .catch(() => {});
   };
 
-  useEffect(() => {
-    fetchCount();
-  }, [refreshTrigger]); // re-fetch after every scan too
+  useEffect(() => { fetchCount(); }, [refreshTrigger]);
 
   const handleScanSuccess = () => {
-    setRefreshTrigger(prev => prev + 1); // triggers fetchCount via useEffect
+    setRefreshTrigger(prev => prev + 1);
     setActiveTab("contacts");
   };
+
+  // ── Landing page ──────────────────────────────────────────────────────────
+  if (showLanding) {
+    return (
+      <LandingPage
+        contactCount={contactCount}
+        onGetStarted={() => setShowLanding(false)}
+      />
+    );
+  }
 
   const tabStyle = (tab: typeof activeTab) => ({
     padding: "10px 20px",
@@ -52,7 +61,8 @@ function App() {
       }}>
         <div style={{ maxWidth: "800px", margin: "0 auto", padding: "0 16px" }}>
           <div style={{ padding: "14px 0 0", textAlign: "center" }}>
-            <h1 style={{ margin: "0 0 2px", fontSize: "1.4rem", color: "#1a1a2e" }}>
+            <h1 style={{ margin: "0 0 2px", fontSize: "1.4rem", color: "#1a1a2e", cursor: "pointer" }}
+              onClick={() => setShowLanding(true)}>
               🤖 AI Smart Card Network
             </h1>
             <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#888" }}>
