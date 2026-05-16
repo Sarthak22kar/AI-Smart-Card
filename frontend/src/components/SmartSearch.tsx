@@ -179,7 +179,7 @@ function ResultCard({ contact, rank }: { contact: Contact; rank: number }) {
 }
 
 // ── Chatbot ───────────────────────────────────────────────────────────────────
-function Chatbot({ onSearch, gps }: { onSearch: (q: string) => void; gps: { lat: number; lng: number } | null }) {
+function Chatbot({ onSearch: _onSearch, gps }: { onSearch: (q: string) => void; gps: { lat: number; lng: number } | null }) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "bot",
@@ -192,7 +192,7 @@ function Chatbot({ onSearch, gps }: { onSearch: (q: string) => void; gps: { lat:
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const recognRef = useRef<SpeechRecognition | null>(null);
+  const recognRef = useRef<any>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -453,9 +453,9 @@ export default function SmartSearch() {
   const [detectedWord,  setDetectedWord]  = useState("");
   const [ambientStatus, setAmbientStatus] = useState("");
 
-  const recognRef   = useRef<SpeechRecognition | null>(null);
+  const recognRef   = useRef<any>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ambientRef  = useRef<SpeechRecognition | null>(null);
+  const ambientRef  = useRef<any>(null);
 
   // Auto-request GPS on mount
   useEffect(() => { getLocation(); }, []);
