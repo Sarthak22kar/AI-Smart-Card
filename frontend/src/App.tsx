@@ -70,7 +70,32 @@ function App() {
             </p>
           </div>
           {/* Tabs */}
-          <div style={{ display: "flex", overflowX: "auto", borderTop: "1px solid #eee" }}>
+          <div style={{ display: "flex", overflowX: "auto", borderTop: "1px solid #eee", alignItems: "center" }}>
+            {/* Home button */}
+            <button
+              onClick={() => setShowLanding(true)}
+              style={{
+                padding: "10px 16px",
+                border: "none",
+                borderBottom: "3px solid transparent",
+                borderRight: "1px solid #eee",
+                backgroundColor: "transparent",
+                color: "#007bff",
+                fontWeight: 700,
+                cursor: "pointer",
+                fontSize: "14px",
+                whiteSpace: "nowrap" as const,
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                flexShrink: 0,
+              }}
+              title="Back to Home"
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = "#f0f7ff")}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+            >
+              🏠 Home
+            </button>
             <button style={tabStyle("search")} onClick={() => setActiveTab("search")}>🔍 Search</button>
             <button style={tabStyle("scan")}   onClick={() => setActiveTab("scan")}>📷 Scan Card</button>
             <button style={tabStyle("contacts")} onClick={() => setActiveTab("contacts")}>
